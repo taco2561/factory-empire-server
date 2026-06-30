@@ -1,0 +1,13 @@
+{
+  "name": "factory-empire-server",
+  "version": "0.2.0-phase2",
+  "description": "Factory Empire v3 - Phase 2: Server deployed to Railway as a background worker (24/7 tick loop, no networking/API/WebSocket added)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "UNLICENSED"
+}

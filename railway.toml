@@ -1,0 +1,18 @@
+# Railway 部署設定（Phase 2）
+#
+# 這個專案是純背景程序（background worker）：
+#   - 不開任何 HTTP port
+#   - 不提供任何 API endpoint
+#   - 不做 healthcheck（因為沒有東西可以被 ping）
+#
+# 因此這裡刻意「不」設定 healthcheckPath，讓 Railway 純粹用
+# process 是否存活來判斷服務健康狀態，符合 Phase 2「不加入 API」
+# 的規格要求。
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "node src/server.js"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

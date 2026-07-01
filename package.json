@@ -1,7 +1,7 @@
 {
   "name": "factory-empire-server",
-  "version": "0.3.0-phase3",
-  "description": "Factory Empire v3 - Phase 3: World state persisted to Supabase (PostgreSQL) instead of localStorage",
+  "version": "0.4.0-phase4a",
+  "description": "Factory Empire v3 - Phase 4A: REST API added (GET /api/world, POST /api/action), frontend unchanged",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"

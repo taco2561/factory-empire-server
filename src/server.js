@@ -17,7 +17,9 @@
 const fs   = require("fs");
 const path = require("path");
 const vm   = require("vm");
+const http = require("http");
 const db   = require("./db");
+const api  = require("./api");
 
 // ── 未捕捉例外記錄 ───────────────────────────────────────────
 process.on("uncaughtException", function(err){
@@ -170,6 +172,20 @@ async function main(){
   }
 
   startServerTick(sandbox);
+
+  // ── [Phase 4A] 啟動 HTTP REST API Server ─────────────────────
+  // PORT 從環境變數讀取（Railway 會自動注入 PORT，本機預設 3000）
+  // 這個 HTTP server 與遊戲 tick 完全獨立，不影響任何遊戲邏輯。
+  const PORT = process.env.PORT || 3000;
+  const httpServer = http.createServer(api.createRequestHandler(sandbox));
+  httpServer.listen(PORT, function(){
+    console.log("[Phase4A Server] REST API 已啟動，監聽 port " + PORT);
+    console.log("[Phase4A Server] 可用路由：");
+    console.log("  GET  /api/health         → 健康檢查");
+    console.log("  GET  /api/world/summary  → 精簡世界摘要");
+    console.log("  GET  /api/world          → 完整 world 狀態");
+    console.log("  POST /api/action         → 執行玩家操作");
+  });
 }
 
 // ── 在組合好的模組原始碼裡，找到 state.js 定義完 localStorage 之後、

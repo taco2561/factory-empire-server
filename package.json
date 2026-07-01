@@ -1,13 +1,16 @@
 {
   "name": "factory-empire-server",
-  "version": "0.2.0-phase2",
-  "description": "Factory Empire v3 - Phase 2: Server deployed to Railway as a background worker (24/7 tick loop, no networking/API/WebSocket added)",
+  "version": "0.3.0-phase3",
+  "description": "Factory Empire v3 - Phase 3: World state persisted to Supabase (PostgreSQL) instead of localStorage",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "postgres": "^3.4.4"
   },
   "license": "UNLICENSED"
 }

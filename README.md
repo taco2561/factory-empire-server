@@ -139,3 +139,110 @@ Railway 採用用量計費，新帳號通常有免費額度。這個背景服務
 持續執行運算（80 家 AI 公司決策、市場撮合等），建議部署後留意 Railway
 後台的用量/帳單頁面，確認費用在預期範圍內。
 
+---
+
+# Phase 3：World 狀態存進 Supabase（PostgreSQL）
+
+## 這個階段做了什麼
+
+在 Phase 1/2，伺服器的世界狀態只存在記憶體裡，**重啟伺服器（或
+Railway 重新部署）就會整個重置**。Phase 3 把世界狀態改成存進
+Supabase 的 PostgreSQL 資料庫，伺服器重啟後能恢復上一次跑到的進度。
+
+## 設計決策：為什麼用單一 JSONB 欄位整包存，而不是拆成多張表
+
+`world` 物件裡 `companies`（80家AI公司+1個玩家）佔了整包資料 90% 以上
+的大小，且被 9 個遊戲邏輯模組、超過 60 處程式碼直接用
+`.find()`/`.forEach()`/`.filter()` 操作整個陣列。如果改成「一家公司
+一列」的關聯式資料表，這 60 處呼叫全部都要重寫成 SQL 查詢，等同重寫
+遊戲核心邏輯——這違反 Phase 3「不修改遊戲規則」的規格要求。
+
+因此採用「整包 JSONB 儲存」：跟原本 `localStorage.setItem(key,
+JSON.stringify(world))` 的精神完全一致，只是儲存位置從瀏覽器換成
+資料庫，**六個核心遊戲邏輯模組沒有被修改任何一行**。
+
+## 新增的資料表
+
+### `game_world`（主要資料表）
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `id` | INTEGER (固定為1) | 單人模式只有一份世界狀態 |
+| `world_data` | JSONB | 完整的 world 物件（公司、市場、政府、股票…全部） |
+| `updated_at` | TIMESTAMPTZ | 最後一次寫入時間 |
+| `created_at` | TIMESTAMPTZ | 第一次建立時間 |
+
+### `game_world_log`（除錯用，非必要）
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `id` | BIGSERIAL | 流水號 |
+| `event_type` | TEXT | `load` / `save` / `init` |
+| `detail` | TEXT | 簡短說明，例如 `day:5 tick:100` |
+| `created_at` | TIMESTAMPTZ | 事件發生時間 |
+
+完整建表語法見 `sql/001_create_game_world.sql`（伺服器啟動時也會
+自動檢查並建立這兩張表，所以就算你忘記手動跑這段 SQL 也沒關係）。
+
+## 如何建立 Supabase 專案
+
+1. 到 [supabase.com](https://supabase.com) 註冊/登入帳號。
+2. 點 **New Project**。
+3. 填寫專案名稱（例如 `factory-empire-db`）、設定一組資料庫密碼
+   （**請妥善保存，等一下會用到**）、選擇地區（建議選離 Railway
+   伺服器近的區域，例如同樣是美西）。
+4. 等待專案建立完成（約 1～2 分鐘）。
+
+## 如何取得連線字串（DATABASE_URL）
+
+1. 進入專案後，左側選單點 **Connect**（或 Project Settings → Database）。
+2. 找到 **Connection string** 區塊，選擇 **Session pooler**（這是
+   給「長連線、持續運行的伺服器」用的模式，跟 Serverless 用的
+   Transaction pooler 不同）。
+3. 複製那串網址，格式類似：
+   ```
+   postgresql://postgres.xxxxxxxxxxxx:[YOUR-PASSWORD]@xxxxx.supabase.com:5432/postgres
+   ```
+4. 把 `[YOUR-PASSWORD]` 換成你剛剛設定的資料庫密碼。
+
+## 如何在 Railway 設定環境變數
+
+1. 進入 Railway 的 `factory-empire-server` 服務頁面。
+2. 點上方的 **Variables** 分頁。
+3. 點 **New Variable**，新增：
+   - **Key**：`DATABASE_URL`
+   - **Value**：貼上剛剛從 Supabase 複製、已經替換密碼的完整連線字串
+4. 儲存後，Railway 會自動重新部署服務套用新的環境變數。
+
+## 如何測試資料庫是否正常運作
+
+部署完成後，到 Railway 的 Deploy Logs 應該會看到：
+
+```
+[Phase3 Server] 連接資料庫中…
+[Phase3 Server] 資料庫目前沒有存檔，將建立全新世界。
+[Server] 模組載入完成，world 已初始化。
+[Phase3 Server] 資料庫背景同步已啟用，每次 saveWorld() 都會非阻塞地寫回 Supabase。
+```
+
+接著到 Supabase 後台 → **Table Editor** → 選 `game_world` 表，應該會
+看到一筆 `id=1` 的資料，`world_data` 欄位裡有完整的遊戲世界 JSON。
+
+**驗證「重啟後能恢復進度」**：到 Railway 服務頁面，點右上角選單選
+**Restart**，等服務重新啟動後再看一次 Deploy Logs，這次應該會看到：
+
+```
+[Phase3 Server] 已從資料庫讀到既有存檔（day:X tick:Y）。
+[Server] 初始狀態 → day: X  tick: Y  公司數: 81
+```
+
+這裡的 `day`/`tick` 應該要跟重啟前最後看到的數字相符（或非常接近），
+代表進度真的有被保留下來，不是從頭開始。
+
+## 如果資料庫連線失敗會怎樣
+
+伺服器設計成「優雅降級」：如果 `DATABASE_URL` 沒設定或連線失敗，
+不會讓整個伺服器崩潰，而是會在 log 印出原因，並自動退回純記憶體
+模式繼續運行（行為等同 Phase 1/2，但這次重啟就會遺失進度）。
+
+

@@ -1,43 +1,36 @@
 // ══════════════════════════════════════════════════════════════
-// Factory Empire v3 — Phase 1 Server
+// Factory Empire v3 — Server (Phase 1 + Phase 2 + Phase 3)
 //
-// 目的（依照第一階段規格）：
-//   把六個核心邏輯模組（economy / npc-ai / government-system /
-//   stock-system / bank-system / game-loop）搬到 Node.js 伺服器執行，
-//   讓遊戲核心開始由伺服器跑，但本階段：
-//     - 不加 WebSocket / Socket.io
-//     - 不做多人同步
-//     - 不加帳號系統 / 資料庫 / 房間系統 / 防作弊
-//     - 不修改 localStorage 邏輯本身（state.js 程式碼不變，
-//       只是補一個 Node.js 沒有的 localStorage 介面）
+// Phase 1：把六個核心邏輯模組搬到 Node.js 伺服器執行。
+// Phase 2：部署到 Railway，作為純背景服務 24 小時運行。
+// Phase 3：world 狀態改存進 Supabase（PostgreSQL），取代原本只存在
+//          記憶體中的做法，讓伺服器重啟後能恢復上一次的進度。
 //
-// 這支程式單純讓伺服器自己跑一份完整的遊戲世界（80家AI公司 + 1個玩家），
-// 跟瀏覽器端目前的單機版「平行存在、互不影響」，用來驗證：
-//   1. 六個核心模組搬進 Node.js 環境是否能正常執行（無瀏覽器依賴問題）
-//   2. Server Tick 是否能穩定、正確地推進遊戲世界
+// Phase 3 的設計原則：
+//   - state.js 的 loadWorld()/saveWorld() 函式本體完全沒有修改
+//   - 只是這兩個函式底層呼叫的 localStorage.getItem/setItem，
+//     現在背後接了一份會同步資料庫的記憶體層（見 modules/state.js）
+//   - 本檔案負責「啟動時把資料庫內容預先載入進那份記憶體」，
+//     確保 var world = loadWorld() 執行的當下資料已經就緒
 // ══════════════════════════════════════════════════════════════
 
 const fs   = require("fs");
 const path = require("path");
 const vm   = require("vm");
+const db   = require("./db");
 
-// ── [Phase 2] 未捕捉例外記錄 ─────────────────────────────────
-// 純粹是讓崩潰原因清楚地印在 log 裡，方便在 Railway 上排查。
-// 不影響任何遊戲邏輯，也不會「攔截並繼續執行」——還是讓
-// Railway 的 restartPolicy 自然接手重啟，符合純背景服務的設計。
+// ── 未捕捉例外記錄 ───────────────────────────────────────────
 process.on("uncaughtException", function(err){
-  console.error("[Phase2 Server] 未捕捉例外，程序即將結束：", err);
+  console.error("[Server] 未捕捉例外，程序即將結束：", err);
   process.exit(1);
 });
 process.on("unhandledRejection", function(reason){
-  console.error("[Phase2 Server] 未處理的 Promise rejection：", reason);
+  console.error("[Server] 未處理的 Promise rejection：", reason);
 });
 
 const MODULES_DIR = path.join(__dirname, "modules");
 
 // ── 固定載入順序（與原本 game.html 組譯腳本的順序完全一致）───
-// 只取「遊戲邏輯」需要的模組，不含 ui-render / ui-events / main
-// （那三個是前端專用，Phase 1 不在伺服器執行）
 const MODULE_ORDER = [
   "utils",
   "constants",
@@ -55,13 +48,6 @@ const MODULE_ORDER = [
   "news",
 ];
 
-// ══════════════════════════════════════════════════════════════
-// 把所有模組串接成一段腳本，在同一個 vm context 裡執行。
-// 原本這些模組是用全域變數互相呼叫（沒有 require/module.exports），
-// 為了「只調整執行位置、不重寫既有功能」，這裡完全比照原本瀏覽器端
-// 組合 game.html 的方式：把多個檔案的原始碼直接串接成一份大腳本，
-// 讓它們繼續用同一份全域作用域互相溝通。
-// ══════════════════════════════════════════════════════════════
 function loadCombinedSource(){
   const parts = MODULE_ORDER.map(function(name){
     const filePath = path.join(MODULES_DIR, name + ".js");
@@ -70,10 +56,6 @@ function loadCombinedSource(){
   return parts.join("\n");
 }
 
-// ── 建立一個最小的全域環境（不含 document/window 等瀏覽器物件）──
-// 六個核心模組本身完全不使用瀏覽器 API（已事先確認），
-// 唯一需要補上的瀏覽器相依是 state.js 用到的 localStorage，
-// 而 state.js 內部已經自帶一份相容介面（見 modules/state.js 開頭）。
 function createSandbox(){
   const sandbox = {
     console: console,
@@ -101,54 +83,130 @@ function createSandbox(){
   return sandbox;
 }
 
-function main(){
-  console.log("[Phase1 Server] 載入遊戲邏輯模組中…");
+const STORAGE_KEY = "pe3_world_v3"; // 與 state.js 內部使用的 key 完全一致
+
+async function main(){
+  console.log("[Server] 載入遊戲邏輯模組中…");
   const source = loadCombinedSource();
 
   const sandbox = createSandbox();
   vm.createContext(sandbox);
 
+  // ── [Phase 3] 先載入模組「定義」，但還不執行頂層的 `var world = loadWorld()` ──
+  // 這裡有個關鍵時序問題：state.js 開頭就有 `var world = loadWorld();`，
+  // 如果直接把整段 source 丟進 vm 執行，這行會在我們把資料庫內容準備好
+  //之前就先跑掉，導致永遠讀到空的、變成每次啟動都是全新世界。
+  //
+  // 解法：先連資料庫、把存檔內容準備好放進 sandbox 能存取的地方，
+  // 再執行整段 source。因為 JS 的 `var` 函式宣告會被提升（hoisting），
+  // 但 `var world = loadWorld()` 這個「賦值」仍是按照程式碼順序執行，
+  // 所以我們改成：在執行 source 之前，先把 localStorage 的預載資料
+  // 準備好，並注入一個資料庫同步函式，這樣 source 執行到
+  // `var world = loadWorld()` 時，localStorage.getItem(...) 已經能
+  // 拿到正確的資料。
+  let dbAvailable = false;
+  let preloadValue = null;
+
   try{
-    vm.runInContext(source, sandbox, { filename: "factory-empire-core.js" });
+    console.log("[Phase3 Server] 連接資料庫中…");
+    await db.ensureSchema();
+    const loaded = await db.loadWorldFromDb();
+    if(loaded){
+      preloadValue = JSON.stringify(loaded);
+      console.log("[Phase3 Server] 已從資料庫讀到既有存檔（day:" + loaded.day + " tick:" + loaded.tick + "）。");
+      await db.logEvent("load", "day:" + loaded.day + " tick:" + loaded.tick);
+    } else {
+      console.log("[Phase3 Server] 資料庫目前沒有存檔，將建立全新世界。");
+      await db.logEvent("init", "no existing save, will create new world");
+    }
+    dbAvailable = true;
+  } catch(err){
+    // 資料庫連線失敗時的退路：不讓整個伺服器掛掉，改用純記憶體模式
+    // （等同 Phase 1/2 的行為），並把原因印清楚方便排查。
+    console.error("[Phase3 Server] 資料庫連線失敗，本次將以純記憶體模式運行（不會持久化）：", err.message);
+  }
+
+  // ── 執行模組腳本：先把預載資料和 key 透過一個小型 bootstrap 片段
+  // 注入 sandbox，再執行真正的遊戲邏輯模組 ──
+  const bootstrap =
+    "var __PHASE3_PRELOAD_KEY = " + JSON.stringify(STORAGE_KEY) + ";\n" +
+    "var __PHASE3_PRELOAD_VALUE = " + (preloadValue ? JSON.stringify(preloadValue) : "null") + ";\n";
+
+  try{
+    vm.runInContext(bootstrap, sandbox, { filename: "phase3-bootstrap.js" });
   } catch(e){
-    console.error("[Phase1 Server] 模組載入失敗：", e);
+    console.error("[Server] Bootstrap 注入失敗：", e);
     process.exit(1);
   }
 
-  console.log("[Phase1 Server] 模組載入完成，world 已初始化。");
-  console.log("[Phase1 Server] 初始狀態 → day:", sandbox.world.day, " tick:", sandbox.world.tick,
+  // 把 state.js 即將定義的 localStorage 物件改造一下：在執行完整段
+  // source 之前，我們沒辦法直接呼叫 sandbox 裡的函式（還沒定義），
+  // 所以改用「在 source 最前面插入一段小腳本」的方式完成預載，
+  // 這段小腳本會在 state.js 真正定義 localStorage 之後、
+  // `var world = loadWorld()` 執行之前，把資料庫內容寫進去。
+  const patchedSource = injectPreloadHook(source);
+
+  try{
+    vm.runInContext(patchedSource, sandbox, { filename: "factory-empire-core.js" });
+  } catch(e){
+    console.error("[Server] 模組載入失敗：", e);
+    process.exit(1);
+  }
+
+  console.log("[Server] 模組載入完成，world 已初始化。");
+  console.log("[Server] 初始狀態 → day:", sandbox.world.day, " tick:", sandbox.world.tick,
               " 公司數:", sandbox.world.companies.length);
+
+  // ── [Phase 3] 把資料庫寫入函式注入給 state.js 內的同步機制使用 ──
+  if(dbAvailable){
+    sandbox.__setDbSyncFn(async function(key, value){
+      if(key !== STORAGE_KEY) return; // 只同步我們關心的這把 key
+      const worldObject = JSON.parse(value);
+      await db.saveWorldToDb(worldObject);
+    });
+    console.log("[Phase3 Server] 資料庫背景同步已啟用，每次 saveWorld() 都會非阻塞地寫回 Supabase。");
+  } else {
+    console.log("[Phase3 Server] 資料庫不可用，本次運行採純記憶體模式（行為等同 Phase 1/2，重啟即重置）。");
+  }
 
   startServerTick(sandbox);
 }
 
+// ── 在組合好的模組原始碼裡，找到 state.js 定義完 localStorage 之後、
+// `var world = loadWorld();` 執行之前的位置，插入一行預載呼叫。
+// 這樣完全不需要修改 state.js 檔案本身的任何一行程式碼。
+function injectPreloadHook(source){
+  const marker = "var world = loadWorld();";
+  const idx = source.indexOf(marker);
+  if(idx < 0){
+    console.error("[Phase3 Server] 警告：找不到預期的插入點（var world = loadWorld();），" +
+                   "將以未預載狀態繼續執行（會被視為全新世界）。");
+    return source;
+  }
+  const hook =
+    "if(typeof __PHASE3_PRELOAD_VALUE!=='undefined' && __PHASE3_PRELOAD_VALUE!==null){ " +
+    "localStorage.__preload(__PHASE3_PRELOAD_KEY, __PHASE3_PRELOAD_VALUE); }\n";
+  return source.slice(0, idx) + hook + source.slice(idx);
+}
+
 // ══════════════════════════════════════════════════════════════
-// Server Tick
-//
-// 原本前端 1x 速度的 tick 間隔是 3000ms（見 ui-render.js: applySpeed）。
-// 規格要求「不修改任何遊戲規則 / 平衡數值」，因此 Phase 1 伺服器沿用
-// 同樣的基準速度（3000ms 一次 tick），不加速、不調整任何遊戲內公式。
-//
-// 每呼叫一次全域的 tick()，遊戲世界就往前推進一格，
-// 跟原本瀏覽器端 setInterval(tick, tickMs) 的行為完全相同，
-// 只是現在是伺服器自己持續呼叫，不依賴任何使用者開著分頁。
+// Server Tick（與 Phase 1/2 完全相同，未修改任何遊戲規則）
 // ══════════════════════════════════════════════════════════════
-const TICK_MS = 3000;          // 與前端 1x 速度一致
-const LOG_EVERY_N_TICKS = 20;  // 每跑完一個遊戲天（20 tick）印一次狀態，方便觀察
+const TICK_MS = 3000;
+const LOG_EVERY_N_TICKS = 20;
 
 function startServerTick(sandbox){
-  console.log("[Phase1 Server] 啟動 Server Tick，間隔 " + TICK_MS + "ms（與前端 1x 速度相同）…");
+  console.log("[Server] 啟動 Server Tick，間隔 " + TICK_MS + "ms（與前端 1x 速度相同）…");
 
   setInterval(function(){
     try{
       sandbox.tick();
     } catch(e){
-      console.error("[Phase1 Server] tick() 執行時發生錯誤：", e);
+      console.error("[Server] tick() 執行時發生錯誤：", e);
       return;
     }
 
     if(sandbox.world.dayTick === 0){
-      // dayTick 剛被 tick() 內部重置為 0，代表這一格剛好跨過一個新的遊戲天
       logWorldSummary(sandbox.world);
     }
   }, TICK_MS);
@@ -160,7 +218,7 @@ function logWorldSummary(world){
   const bankruptNpc = world.companies.filter(function(c){ return !c.isPlayer && c.bankrupt; }).length;
 
   console.log(
-    "[Phase1 Server] Day " + world.day +
+    "[Server] Day " + world.day +
     " | Tick " + world.tick +
     " | 玩家現金 $" + Math.round(player ? player.cash : 0) +
     " | 存活NPC " + aliveNpc +
@@ -169,4 +227,8 @@ function logWorldSummary(world){
   );
 }
 
-main();
+main().catch(function(err){
+  console.error("[Server] 啟動失敗：", err);
+  process.exit(1);
+});
+

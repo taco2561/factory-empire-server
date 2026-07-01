@@ -123,18 +123,53 @@ function seedNpcByType(npc){
 }
 
 // ══════════════════════════════════════════════════════════════
-// [Phase 1 Server] localStorage 不存在於 Node.js 環境。
-// 規格要求「不修改 localStorage 邏輯」，因此這裡提供一個最小的
-// 同名介面（getItem/setItem）讓 loadWorld()/saveWorld() 程式碼本身
-// 完全不需要更動，只是底層儲存從瀏覽器改為伺服器記憶體（不落地存檔）。
-// 這代表 Phase 1 的伺服器世界狀態只存在於程式執行期間，重啟 server 即重置。
+// [Phase 3] localStorage 不存在於 Node.js 環境。
+// 規格要求「不修改 localStorage 邏輯」，因此 loadWorld()/saveWorld()
+// 這兩個函式本體（下方）完全沒有更動一行，包含所有相容性補齊邏輯。
+//
+// 改動的地方是：這個 localStorage 模擬層現在會在背景把資料同步到
+// Supabase（PostgreSQL）。具體做法：
+//
+//   - setItem(key, value)：寫進記憶體（跟 Phase 1 一樣，保證
+//     loadWorld()/saveWorld() 同步呼叫不需要變成 async），
+//     同時「非阻塞地」把這份資料背景寫進資料庫（fire-and-forget，
+//     不等待寫入完成，失敗只記錄錯誤、不影響 tick() 繼續執行）。
+//
+//   - getItem(key)：讀記憶體。這份記憶體在 server.js 啟動時，
+//     會先用 await 把資料庫裡的內容載入進來，所以當 loadWorld()
+//     第一次呼叫 getItem() 時，資料已經準備好了，不需要任何
+//     非同步等待。
+//
+// 這個設計讓 state.js 原本的程式碼完全不用變動，只是底層儲存
+// 從「程序記憶體（Phase 1）」進化成「記憶體 + 背景同步到資料庫
+// （Phase 3）」。
 // ══════════════════════════════════════════════════════════════
+var __dbSyncFn = null;        // 由 server.js 注入：function(key, value){ ... 寫入資料庫 ... }
+var __dbSyncPending = false;  // 避免同時觸發多個寫入請求互相競爭
+
+function __setDbSyncFn(fn){ __dbSyncFn = fn; }
+
 var localStorage = (function(){
   var store = {};
   return {
     getItem: function(key){ return Object.prototype.hasOwnProperty.call(store,key) ? store[key] : null; },
-    setItem: function(key, value){ store[key]=String(value); },
+    setItem: function(key, value){
+      store[key]=String(value);
+      // 背景同步到資料庫，不等待、不阻塞呼叫端（saveWorld() 仍是同步函式）
+      if(__dbSyncFn){
+        if(__dbSyncPending){
+          // 上一次寫入還沒完成，這次先跳過，反正下一個 tick 馬上又會再存一次最新狀態
+          return;
+        }
+        __dbSyncPending = true;
+        Promise.resolve(__dbSyncFn(key, value))
+          .catch(function(err){ console.error("[Phase3 Server] 資料庫背景寫入失敗：", err); })
+          .then(function(){ __dbSyncPending = false; });
+      }
+    },
     removeItem: function(key){ delete store[key]; },
+    // 供 server.js 啟動時把資料庫內容灌進記憶體用
+    __preload: function(key, value){ store[key]=value; },
   };
 })();
 

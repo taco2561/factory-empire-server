@@ -1,7 +1,7 @@
 {
   "name": "factory-empire-server",
-  "version": "0.4.0-phase4a",
-  "description": "Factory Empire v3 - Phase 4A: REST API added (GET /api/world, POST /api/action), frontend unchanged",
+  "version": "0.5.0-phase5a",
+  "description": "Factory Empire v3 - Phase 5A: WebSocket added for real-time world state push",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"
@@ -10,7 +10,8 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "postgres": "^3.4.4"
+    "postgres": "^3.4.4",
+    "ws": "^8.18.0"
   },
   "license": "UNLICENSED"
 }

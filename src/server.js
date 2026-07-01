@@ -20,6 +20,7 @@ const vm   = require("vm");
 const http = require("http");
 const db   = require("./db");
 const api  = require("./api");
+const ws   = require("./ws-server");
 
 // ── 未捕捉例外記錄 ───────────────────────────────────────────
 process.on("uncaughtException", function(err){
@@ -174,18 +175,23 @@ async function main(){
   startServerTick(sandbox);
 
   // ── [Phase 4A] 啟動 HTTP REST API Server ─────────────────────
-  // PORT 從環境變數讀取（Railway 會自動注入 PORT，本機預設 3000）
-  // 這個 HTTP server 與遊戲 tick 完全獨立，不影響任何遊戲邏輯。
   const PORT = process.env.PORT || 3000;
   const httpServer = http.createServer(api.createRequestHandler(sandbox));
+
+  // ── [Phase 5A] 建立 WebSocket Server（共用同一個 HTTP server）
+  const wss = ws.createWebSocketServer(httpServer, sandbox);
+
   httpServer.listen(PORT, function(){
-    console.log("[Phase4A Server] REST API 已啟動，監聽 port " + PORT);
-    console.log("[Phase4A Server] 可用路由：");
+    console.log("[Server] HTTP + WebSocket 已啟動，監聽 port " + PORT);
+    console.log("[Phase4A] REST API 路由：");
     console.log("  GET  /api/health         → 健康檢查");
     console.log("  GET  /api/world/summary  → 精簡世界摘要");
     console.log("  GET  /api/world          → 完整 world 狀態");
     console.log("  POST /api/action         → 執行玩家操作");
+    console.log("[Phase5A] WebSocket：ws://同網址 → 即時 world 更新");
   });
+
+  startServerTick(sandbox, wss);
 }
 
 // ── 在組合好的模組原始碼裡，找到 state.js 定義完 localStorage 之後、
@@ -211,7 +217,7 @@ function injectPreloadHook(source){
 const TICK_MS = 3000;
 const LOG_EVERY_N_TICKS = 20;
 
-function startServerTick(sandbox){
+function startServerTick(sandbox, wss){
   console.log("[Server] 啟動 Server Tick，間隔 " + TICK_MS + "ms（與前端 1x 速度相同）…");
 
   setInterval(function(){
@@ -221,6 +227,9 @@ function startServerTick(sandbox){
       console.error("[Server] tick() 執行時發生錯誤：", e);
       return;
     }
+
+    // [Phase 5A] 每個 tick 廣播更新給所有連線的前端
+    ws.broadcastTick(wss, sandbox);
 
     if(sandbox.world.dayTick === 0){
       logWorldSummary(sandbox.world);

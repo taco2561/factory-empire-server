@@ -177,7 +177,11 @@ function buildWorldSummary(world){
 }
 
 // ── HTTP 請求路由 ─────────────────────────────────────────────
-function createRequestHandler(sandbox){
+function createRequestHandler(sandbox, wss){
+  // 引入 ws-server 的廣播功能（wss 由 server.js 傳入）
+  var wsServer = null;
+  try{ wsServer = require("./ws-server"); } catch(e){}
+
   return function(req, res){
     // CORS header（Phase 4B 前端呼叫 API 時需要）
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -238,6 +242,12 @@ function createRequestHandler(sandbox){
         var result = handleAction(sandbox, action);
         res.writeHead(result.ok ? 200 : 400);
         res.end(JSON.stringify(result));
+
+        // [Phase 5B] Action 成功後，廣播最新 world 狀態給所有連線的前端
+        // 這樣前端不用自己再去 fetch /api/world，Server 主動推過去
+        if(result.ok && wss && wsServer){
+          wsServer.broadcastWorldUpdate(wss, sandbox);
+        }
       });
       return;
     }

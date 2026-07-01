@@ -176,10 +176,15 @@ async function main(){
 
   // ── [Phase 4A] 啟動 HTTP REST API Server ─────────────────────
   const PORT = process.env.PORT || 3000;
-  const httpServer = http.createServer(api.createRequestHandler(sandbox));
+  const httpServer = http.createServer(api.createRequestHandler(sandbox, null)); // wss 在 listen 後注入
 
   // ── [Phase 5A] 建立 WebSocket Server（共用同一個 HTTP server）
   const wss = ws.createWebSocketServer(httpServer, sandbox);
+
+  // [Phase 5B] 重新建立 request handler，這次帶入 wss
+  // （必須在 wss 建立後才能傳入，所以先用 null 建 HTTP server，再重設 handler）
+  httpServer.removeAllListeners("request");
+  httpServer.on("request", api.createRequestHandler(sandbox, wss));
 
   httpServer.listen(PORT, function(){
     console.log("[Server] HTTP + WebSocket 已啟動，監聽 port " + PORT);

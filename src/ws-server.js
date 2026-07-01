@@ -119,4 +119,13 @@ function broadcastTick(wss, sandbox){
   }
 }
 
-module.exports = { createWebSocketServer, broadcastTick, buildSummary };
+module.exports = { createWebSocketServer, broadcastTick, buildSummary, broadcastWorldUpdate };
+
+// ── [Phase 5B] 廣播完整 world 給所有前端（Action 執行後呼叫）─
+function broadcastWorldUpdate(wss, sandbox){
+  if(!wss || wss.clients.size === 0) return;
+  broadcast(wss, {
+    type: "WORLD_FULL_UPDATE",
+    data: sandbox.world,
+  });
+}

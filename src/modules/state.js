@@ -44,12 +44,14 @@ function assignNpcTypes(count){
 }
 
 function makeWorld(){
-  var player = makeCompany("你的公司", true, 10000, null);
+  // [Phase 6A] 移除固定的「你的公司」（isPlayer:true），
+  // 玩家公司改為在玩家註冊時動態加入（方案C：每人獨立新增一家公司）。
+  // world 初始只有 80 家 NPC 公司，玩家登入後才看到自己的公司。
   var npcCount = 80;
   var npcTypes = assignNpcTypes(npcCount);
   var npcs = NPC_NAMES.slice(0, npcCount).map(function(n,i){ return makeCompany(n, false, 10000, npcTypes[i]); });
   var world = {
-    companies: [player].concat(npcs),
+    companies: npcs,
     market: initMarket(),
     venues: [],
     currentNews: [],

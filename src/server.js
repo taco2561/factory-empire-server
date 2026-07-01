@@ -21,6 +21,7 @@ const http = require("http");
 const db   = require("./db");
 const api  = require("./api");
 const ws   = require("./ws-server");
+const auth = require("./auth");
 
 // ── 未捕捉例外記錄 ───────────────────────────────────────────
 process.on("uncaughtException", function(err){
@@ -113,6 +114,7 @@ async function main(){
   try{
     console.log("[Phase3 Server] 連接資料庫中…");
     await db.ensureSchema();
+    await auth.ensureAuthSchema();
     const loaded = await db.loadWorldFromDb();
     if(loaded){
       preloadValue = JSON.stringify(loaded);

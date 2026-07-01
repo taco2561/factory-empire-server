@@ -20,6 +20,7 @@
 // ══════════════════════════════════════════════════════════════
 
 const WebSocket = require("ws");
+const auth      = require("./auth");
 
 // ── 廣播給所有連線中的前端 ────────────────────────────────────
 function broadcast(wss, message){
@@ -61,8 +62,26 @@ function createWebSocketServer(httpServer, sandbox){
 
   wss.on("connection", function(ws, req){
     var ip = req.socket.remoteAddress || "unknown";
-    console.log("[Phase5A WS] 新連線 from " + ip +
-                "，目前連線數：" + wss.clients.size);
+
+    // [Phase 6A] 驗證 token（從 query string 取得，例如 ?token=xxx）
+    var authResult = auth.extractToken(req)
+      ? auth.verifyToken(auth.extractToken(req))
+      : { ok: false };
+
+    if(authResult.ok){
+      ws.playerId  = authResult.data.playerId;
+      ws.companyId = authResult.data.companyId;
+      ws.username  = authResult.data.username;
+      console.log("[Phase5A WS] 玩家 " + ws.username + " 連線，companyId:" + ws.companyId);
+    } else {
+      // 未登入也可以連線（觀看模式），但 companyId 為 null
+      ws.playerId  = null;
+      ws.companyId = null;
+      ws.username  = "guest";
+      console.log("[Phase5A WS] 訪客連線 from " + ip);
+    }
+
+    console.log("[Phase5A WS] 目前連線數：" + wss.clients.size);
 
     // 連線後立即推送一次當前 world 狀態，讓前端馬上有資料可以顯示
     ws.send(JSON.stringify({

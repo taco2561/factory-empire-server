@@ -15,17 +15,22 @@
 //   GET  /api/health         → 健康檢查（確認 Server 正在跑）
 // ══════════════════════════════════════════════════════════════
 
+const auth = require("./auth");
+
 // ── Action 處理器：把 Action type 對應到 sandbox 內的遊戲函式 ──
 // sandbox 是 vm context，所有遊戲邏輯函式都在裡面
-function handleAction(sandbox, action){
+// [Phase 6A] companyId 從 JWT token 取得，不再直接找 isPlayer:true
+function handleAction(sandbox, action, companyId){
   var type    = action.type;
   var payload = action.payload || {};
   var s       = sandbox;
 
-  // 自動取得玩家 ID（Phase 4A 單人模式，直接找 isPlayer:true 的公司）
-  // Phase 5 多人化後這裡會改成從 token/session 取得
-  var player  = s.world.companies.find(function(c){ return c.isPlayer; });
-  if(!player) return { ok: false, error: "找不到玩家公司" };
+  // 用 companyId 找玩家公司（Phase 6A：從 JWT 取得，不再找 isPlayer:true）
+  var player = companyId
+    ? s.world.companies.find(function(c){ return c.id === companyId; })
+    : s.world.companies.find(function(c){ return c.isPlayer; }); // 向下相容
+
+  if(!player) return { ok: false, error: "找不到玩家公司，請重新登入" };
   var pid = player.id;
 
   try{
@@ -194,6 +199,46 @@ function createRequestHandler(sandbox, wss){
 
     var url = req.url.split("?")[0];
 
+    // ── [Phase 6A] 帳號 API（不需要驗證）────────────────────
+    if(req.method === "POST" && url === "/api/auth/register"){
+      auth.handleRegister(req, sandbox)
+        .then(function(result){
+          res.writeHead(result.ok ? 200 : 400);
+          res.end(JSON.stringify(result));
+        })
+        .catch(function(err){
+          res.writeHead(500);
+          res.end(JSON.stringify({ ok:false, error:"伺服器錯誤：" + err.message }));
+        });
+      return;
+    }
+
+    if(req.method === "POST" && url === "/api/auth/login"){
+      auth.handleLogin(req, sandbox)
+        .then(function(result){
+          res.writeHead(result.ok ? 200 : 401);
+          res.end(JSON.stringify(result));
+        })
+        .catch(function(err){
+          res.writeHead(500);
+          res.end(JSON.stringify({ ok:false, error:"伺服器錯誤：" + err.message }));
+        });
+      return;
+    }
+
+    if(req.method === "GET" && url === "/api/auth/me"){
+      auth.handleMe(req, sandbox)
+        .then(function(result){
+          res.writeHead(result.ok ? 200 : 401);
+          res.end(JSON.stringify(result));
+        })
+        .catch(function(err){
+          res.writeHead(500);
+          res.end(JSON.stringify({ ok:false, error:"伺服器錯誤：" + err.message }));
+        });
+      return;
+    }
+
     // ── GET /api/health ─────────────────────────────────────
     if(req.method === "GET" && url === "/api/health"){
       res.writeHead(200);
@@ -223,6 +268,12 @@ function createRequestHandler(sandbox, wss){
 
     // ── POST /api/action ─────────────────────────────────────
     if(req.method === "POST" && url === "/api/action"){
+      // [Phase 6A] 驗證 JWT，取得 companyId
+      var authResult = auth.requireAuth(req);
+      var companyId  = authResult.ok ? authResult.data.companyId : null;
+      // 向下相容：沒有 token 時仍嘗試找 isPlayer:true（方便舊版前端測試）
+      // 正式多人模式下，沒有 token 應該直接 401
+
       var body = "";
       req.on("data", function(chunk){ body += chunk; });
       req.on("end", function(){
@@ -239,12 +290,11 @@ function createRequestHandler(sandbox, wss){
           res.end(JSON.stringify({ ok:false, error:"Action 必須包含 type 欄位" }));
           return;
         }
-        var result = handleAction(sandbox, action);
+        var result = handleAction(sandbox, action, companyId);
         res.writeHead(result.ok ? 200 : 400);
         res.end(JSON.stringify(result));
 
         // [Phase 5B] Action 成功後，廣播最新 world 狀態給所有連線的前端
-        // 這樣前端不用自己再去 fetch /api/world，Server 主動推過去
         if(result.ok && wss && wsServer){
           wsServer.broadcastWorldUpdate(wss, sandbox);
         }

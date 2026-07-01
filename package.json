@@ -1,7 +1,7 @@
 {
   "name": "factory-empire-server",
-  "version": "0.5.0-phase5a",
-  "description": "Factory Empire v3 - Phase 5A: WebSocket added for real-time world state push",
+  "version": "0.6.0-phase6a",
+  "description": "Factory Empire v3 - Phase 6A: Player auth system (register/login/JWT)",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"
@@ -10,6 +10,8 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
     "postgres": "^3.4.4",
     "ws": "^8.18.0"
   },

@@ -95,4 +95,5 @@ module.exports = {
   loadWorldFromDb,
   saveWorldToDb,
   logEvent,
+  getClient,
 };

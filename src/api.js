@@ -191,7 +191,7 @@ function createRequestHandler(sandbox, wss){
     // CORS header（Phase 4B 前端呼叫 API 時需要）
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Content-Type", "application/json; charset=utf-8");
 
     // Preflight

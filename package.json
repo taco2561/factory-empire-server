@@ -1,7 +1,7 @@
 {
   "name": "factory-empire-server",
-  "version": "0.8.0-phase7a",
-  "description": "Factory Empire v3 - Phase 7A: 多 World 資料庫模型（Main World + Tournament World）",
+  "version": "0.9.0-phase7b",
+  "description": "Factory Empire v3 - Phase 7B: WorldManager（支援多 World 同時運行）+ 造市商模組",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"

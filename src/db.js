@@ -3,8 +3,8 @@
 //
 // 這支檔案獨立於六個核心遊戲邏輯模組之外，不屬於「遊戲規則」的
 // 一部分，純粹負責跟 Supabase（PostgreSQL）對話：
-//   - loadWorldFromDb()：啟動時讀取資料庫裡的 world JSON
-//   - saveWorldToDb(jsonString)：把目前的 world JSON 寫回資料庫
+//   - loadWorldFromDb(worldId)：啟動時讀取指定 world 的存檔 JSON
+//   - saveWorldToDb(worldId, worldObject)：把指定 world 的狀態寫回資料庫
 //
 // 連線資訊一律從環境變數讀取（DATABASE_URL），不把任何帳密寫死
 // 在程式碼裡。
@@ -133,35 +133,51 @@ async function ensureSchema(){
     )
   `;
   await client`CREATE INDEX IF NOT EXISTS idx_tournament_results_world ON tournament_results (world_id)`;
+
+  // ── [Phase 7B] game_world.id 原本 DEFAULT 是常數 1（單人模式時代
+  //    的殘留設計：反正永遠只有一列，id 寫死 1 就好）。多 World 情境
+  //    下每個 world 各自一列，繼續用常數 1 當預設值，第二個 world
+  //    存檔時就會撞 PRIMARY KEY。改成用序列自動遞增，且業務邏輯上
+  //    的識別／upsert 一律改用 world_id（已經有 UNIQUE INDEX），
+  //    不再依賴 id 本身的值，所以這個修正對現有資料完全無感。
+  await client`CREATE SEQUENCE IF NOT EXISTS game_world_id_seq`;
+  await client`SELECT setval('game_world_id_seq', GREATEST((SELECT MAX(id) FROM game_world), 1))`;
+  await client`ALTER TABLE game_world ALTER COLUMN id SET DEFAULT nextval('game_world_id_seq')`;
 }
 
-// ── 讀取目前存檔（若資料庫裡還沒有任何資料，回傳 null）─────────
-async function loadWorldFromDb(){
+// ── 讀取指定 world 目前存檔（若資料庫裡還沒有任何資料，回傳 null）──
+// [Phase 7B] 加入 worldId 參數：每個 World（Main 或 Tournament）各自
+//一列，用 world_id 查詢（不再假設永遠只有 id=1 這一列）。
+async function loadWorldFromDb(worldId){
   const client = getClient();
-  const rows = await client`SELECT world_data FROM game_world WHERE id = 1`;
+  const rows = await client`SELECT world_data FROM game_world WHERE world_id = ${worldId}`;
   if(rows.length === 0) return null;
   return rows[0].world_data; // postgres.js 會自動把 JSONB 轉成 JS 物件
 }
 
-// ── 寫入存檔（UPSERT：第一次是新增，之後都是更新同一列）─────────
-async function saveWorldToDb(worldObject){
+// ── 寫入指定 world 的存檔（UPSERT：第一次是新增，之後都是更新同一列）──
+// [Phase 7B] 加入 worldId 參數；ON CONFLICT 改用 world_id（已有 UNIQUE
+// INDEX），不再依賴 id 欄位，id 交給資料庫自己用序列產生即可。
+async function saveWorldToDb(worldId, worldObject){
   const client = getClient();
   await client`
-    INSERT INTO game_world (id, world_data, updated_at)
-    VALUES (1, ${client.json(worldObject)}, now())
-    ON CONFLICT (id) DO UPDATE
+    INSERT INTO game_world (world_id, world_data, updated_at)
+    VALUES (${worldId}, ${client.json(worldObject)}, now())
+    ON CONFLICT (world_id) DO UPDATE
       SET world_data = EXCLUDED.world_data,
           updated_at = now()
   `;
 }
 
 // ── 簡單的事件記錄（除錯用，非必要）────────────────────────────
-async function logEvent(eventType, detail){
+// [Phase 7B] 加入可選的 worldId 參數（預設 1＝Main World，向下相容
+// 沒有帶這個參數的舊呼叫）。
+async function logEvent(eventType, detail, worldId){
   try{
     const client = getClient();
     await client`
-      INSERT INTO game_world_log (event_type, detail)
-      VALUES (${eventType}, ${detail || null})
+      INSERT INTO game_world_log (event_type, detail, world_id)
+      VALUES (${eventType}, ${detail || null}, ${worldId || 1})
     `;
   }catch(err){
     // log 記錄失敗不應該影響主流程，只印出來看

@@ -201,7 +201,12 @@ function findCompanyByPlayerId(sandbox, playerId){
 // ══════════════════════════════════════════════════════════════
 
 // ── POST /api/auth/register ───────────────────────────────────
-async function handleRegister(req, sandbox){
+// [Phase 7C] 加入 worldId 參數：目前只會是 Main World（1）——註冊
+// 建立的是玩家的「永久帳號身份」，永遠先在 Main World 開一家公司；
+// 之後 Phase 7D 報名 Tournament 用的是另一支專屬的 join API，
+// 不會經過這裡。
+async function handleRegister(req, sandbox, worldId){
+  worldId = worldId || 1;
   var body = await readBody(req);
   var username = (body.username || "").trim();
   var password = (body.password || "").trim();
@@ -252,19 +257,21 @@ async function handleRegister(req, sandbox){
   // 記錄 log
   await sql`INSERT INTO player_login_log (player_id, event_type) VALUES (${player.id}, 'register')`;
 
-  // 發 JWT
-  var token = signToken({ playerId: player.id, username: player.username, companyId: company.id });
+  // 發 JWT（[Phase 7C] 加入 worldId：目前一律是 Main World）
+  var token = signToken({ playerId: player.id, username: player.username, companyId: company.id, worldId: worldId });
 
   return {
     ok: true,
     token: token,
-    player: { id: player.id, username: player.username, companyId: company.id, companyName: company.name },
+    player: { id: player.id, username: player.username, companyId: company.id, companyName: company.name, worldId: worldId },
     company: { id: company.id, name: company.name, cash: company.cash },
   };
 }
 
 // ── POST /api/auth/login ──────────────────────────────────────
-async function handleLogin(req, sandbox){
+// [Phase 7C] 加入 worldId 參數，同 handleRegister：目前一律是 Main World。
+async function handleLogin(req, sandbox, worldId){
+  worldId = worldId || 1;
   var body = await readBody(req);
   var username = (body.username || "").trim();
   var password = (body.password || "").trim();
@@ -300,13 +307,13 @@ async function handleLogin(req, sandbox){
   await sql`UPDATE players SET last_login_at = now() WHERE id = ${player.id}`;
   await sql`INSERT INTO player_login_log (player_id, event_type) VALUES (${player.id}, 'login')`;
 
-  // 發 JWT
-  var token = signToken({ playerId: player.id, username: player.username, companyId: company.id });
+  // 發 JWT（[Phase 7C] 加入 worldId：目前一律是 Main World）
+  var token = signToken({ playerId: player.id, username: player.username, companyId: company.id, worldId: worldId });
 
   return {
     ok: true,
     token: token,
-    player: { id: player.id, username: player.username, companyId: company.id, companyName: company.name },
+    player: { id: player.id, username: player.username, companyId: company.id, companyName: company.name, worldId: worldId },
     company: { id: company.id, name: company.name, cash: company.cash },
   };
 }
@@ -321,7 +328,7 @@ async function handleMe(req, sandbox){
 
   return {
     ok: true,
-    player: { id: auth.data.playerId, username: auth.data.username, companyId: auth.data.companyId },
+    player: { id: auth.data.playerId, username: auth.data.username, companyId: auth.data.companyId, worldId: auth.data.worldId || 1 },
     company: { id: company.id, name: company.name, cash: company.cash, buildings: company.buildings.length },
   };
 }

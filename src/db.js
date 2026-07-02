@@ -185,10 +185,21 @@ async function logEvent(eventType, detail, worldId){
   }
 }
 
+// ── [Phase 7C] 列出所有 World（Main + Tournament），供 GET /api/worlds 用 ──
+async function listWorlds(){
+  const client = getClient();
+  return await client`
+    SELECT id, type, name, status, starts_at, ends_at, settings, created_at
+    FROM worlds
+    ORDER BY id ASC
+  `;
+}
+
 module.exports = {
   ensureSchema,
   loadWorldFromDb,
   saveWorldToDb,
   logEvent,
+  listWorlds,
   getClient,
 };

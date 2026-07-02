@@ -1,21 +1,57 @@
 // ══════════════════════════════════════════════════════════════
 // Factory Empire v3 — Phase 4A：REST API 路由
+// [Phase 7C] 改成透過 WorldManager 依 worldId 動態找到對應的 world，
+// 不再假設整個 Server 只有一個固定的 sandbox。
 //
 // 設計原則：
 //   - 不加入任何第三方框架（不用 express），只用 Node.js 內建 http 模組
 //     讓依賴保持最小，且 package.json 不需要額外套件
 //   - 所有遊戲邏輯仍由 sandbox（vm context）執行，API 只是橋接層
-//   - 前端完全不改（Phase 4A 規格），API 供 Postman/curl 測試用
-//   - Action 格式統一設計好，Phase 4B/4C 前端接上時直接沿用
+//   - Action 格式統一設計好，前端直接沿用
 //
 // API 路由：
-//   GET  /api/world          → 取得目前完整 world 狀態（供前端渲染用）
+//   GET  /api/worlds         → 列出目前有哪些 World（Main + Tournament）
+//   GET  /api/world          → 取得指定 world 的完整狀態（供前端渲染用）
 //   GET  /api/world/summary  → 取得精簡摘要（供快速輪詢用）
 //   POST /api/action         → 執行玩家操作（統一 Action 格式）
 //   GET  /api/health         → 健康檢查（確認 Server 正在跑）
+//
+// worldId 怎麼決定：
+//   - 已登入：從 JWT payload 的 worldId 取得（登入時就已經綁定）
+//   - 未登入（訪客／觀戰）：GET 系列路由可以用 ?worldId= 查詢參數指定，
+//     沒指定就預設 Main World（DEFAULT_WORLD_ID = 1）
+//   - /api/auth/register、/api/auth/login 目前一律對 Main World 操作
+//     （帳號註冊/登入本來就只跟 Main World 有關；Tournament 報名走
+//     Phase 7D 才會加入的專屬 join API，不經過這裡）
 // ══════════════════════════════════════════════════════════════
 
 const auth = require("./auth");
+const db = require("./db");
+const worldManager = require("./world-manager");
+const wsServer = require("./ws-server");
+
+const DEFAULT_WORLD_ID = 1; // Main World
+
+// ── 從已驗證的 auth 結果取得 worldId，沒有就退回 fallback ────────
+function resolveWorldId(authResult, fallbackWorldId){
+  if(authResult && authResult.ok && authResult.data && authResult.data.worldId){
+    return authResult.data.worldId;
+  }
+  return fallbackWorldId;
+}
+
+// ── 從 URL 的查詢字串取出 ?worldId=，沒有就回傳 null ─────────────
+function parseQueryWorldId(req){
+  try{
+    var url = new URL(req.url, "http://localhost");
+    var raw = url.searchParams.get("worldId");
+    if(!raw) return null;
+    var n = parseInt(raw, 10);
+    return isNaN(n) ? null : n;
+  } catch(e){
+    return null;
+  }
+}
 
 // ── Action 處理器：把 Action type 對應到 sandbox 內的遊戲函式 ──
 // sandbox 是 vm context，所有遊戲邏輯函式都在裡面
@@ -230,11 +266,9 @@ function buildWorldSummary(world, companyId){
 }
 
 // ── HTTP 請求路由 ─────────────────────────────────────────────
-function createRequestHandler(sandbox, wss){
-  // 引入 ws-server 的廣播功能（wss 由 server.js 傳入）
-  var wsServer = null;
-  try{ wsServer = require("./ws-server"); } catch(e){}
-
+// [Phase 7C] 不再需要固定的 sandbox 參數——每個路由自己決定要對
+// 哪個 world 操作，透過 worldManager.getSandbox(worldId) 動態取得。
+function createRequestHandler(wss){
   return function(req, res){
     // CORS header（Phase 4B 前端呼叫 API 時需要）
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -247,9 +281,15 @@ function createRequestHandler(sandbox, wss){
 
     var url = req.url.split("?")[0];
 
-    // ── [Phase 6A] 帳號 API（不需要驗證）────────────────────
+    // ── [Phase 6A] 帳號 API（不需要驗證，一律對 Main World 操作）───
     if(req.method === "POST" && url === "/api/auth/register"){
-      auth.handleRegister(req, sandbox)
+      var registerSandbox = worldManager.getSandbox(DEFAULT_WORLD_ID);
+      if(!registerSandbox){
+        res.writeHead(503);
+        res.end(JSON.stringify({ ok:false, error:"伺服器尚未就緒，請稍後再試" }));
+        return;
+      }
+      auth.handleRegister(req, registerSandbox, DEFAULT_WORLD_ID)
         .then(function(result){
           res.writeHead(result.ok ? 200 : 400);
           res.end(JSON.stringify(result));
@@ -262,7 +302,13 @@ function createRequestHandler(sandbox, wss){
     }
 
     if(req.method === "POST" && url === "/api/auth/login"){
-      auth.handleLogin(req, sandbox)
+      var loginSandbox = worldManager.getSandbox(DEFAULT_WORLD_ID);
+      if(!loginSandbox){
+        res.writeHead(503);
+        res.end(JSON.stringify({ ok:false, error:"伺服器尚未就緒，請稍後再試" }));
+        return;
+      }
+      auth.handleLogin(req, loginSandbox, DEFAULT_WORLD_ID)
         .then(function(result){
           res.writeHead(result.ok ? 200 : 401);
           res.end(JSON.stringify(result));
@@ -275,7 +321,15 @@ function createRequestHandler(sandbox, wss){
     }
 
     if(req.method === "GET" && url === "/api/auth/me"){
-      auth.handleMe(req, sandbox)
+      var meAuth = auth.requireAuth(req);
+      var meWorldId = resolveWorldId(meAuth, DEFAULT_WORLD_ID);
+      var meSandbox = worldManager.getSandbox(meWorldId);
+      if(!meSandbox){
+        res.writeHead(404);
+        res.end(JSON.stringify({ ok:false, error:"找不到對應的 world（worldId:" + meWorldId + "）" }));
+        return;
+      }
+      auth.handleMe(req, meSandbox)
         .then(function(result){
           res.writeHead(result.ok ? 200 : 401);
           res.end(JSON.stringify(result));
@@ -289,13 +343,41 @@ function createRequestHandler(sandbox, wss){
 
     // ── GET /api/health ─────────────────────────────────────
     if(req.method === "GET" && url === "/api/health"){
+      var healthSandbox = worldManager.getSandbox(DEFAULT_WORLD_ID);
       res.writeHead(200);
       res.end(JSON.stringify({
         status:  "ok",
-        day:     sandbox.world.day,
-        tick:    sandbox.world.tick,
+        day:     healthSandbox ? healthSandbox.world.day : null,
+        tick:    healthSandbox ? healthSandbox.world.tick : null,
         uptime:  Math.floor(process.uptime()) + "s",
+        loadedWorlds: worldManager.listLoadedWorldIds(),
       }));
+      return;
+    }
+
+    // ── [Phase 7C] GET /api/worlds：列出目前有哪些 World ─────
+    // 公開路由，查資料庫的 worlds 表（不是只有記憶體裡目前載入的），
+    // 這樣就算 Tournament World 還沒被 WorldManager 載入（例如
+    // status='scheduled'，還沒開賽），前端也能看到「即將開始」的資訊。
+    if(req.method === "GET" && url === "/api/worlds"){
+      db.listWorlds()
+        .then(function(rows){
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            ok: true,
+            data: rows.map(function(w){
+              return {
+                id: w.id, type: w.type, name: w.name, status: w.status,
+                startsAt: w.starts_at, endsAt: w.ends_at, settings: w.settings,
+                loaded: worldManager.isLoaded(w.id),
+              };
+            }),
+          }));
+        })
+        .catch(function(err){
+          res.writeHead(500);
+          res.end(JSON.stringify({ ok:false, error:"查詢 world 列表失敗：" + err.message }));
+        });
       return;
     }
 
@@ -303,10 +385,19 @@ function createRequestHandler(sandbox, wss){
     if(req.method === "GET" && url === "/api/world/summary"){
       // [Phase 6B] 選填身份驗證：有帶 token 就回傳「自己的公司」摘要，
       // 沒帶 token（訪客／觀戰模式）仍可查看世界整體狀態，player 為 null。
+      // [Phase 7C] worldId 優先從 token 取得；訪客可用 ?worldId= 指定
+      // 要觀看哪個 world，沒指定則預設 Main World。
       var summaryAuth = auth.requireAuth(req);
+      var summaryWorldId = resolveWorldId(summaryAuth, parseQueryWorldId(req) || DEFAULT_WORLD_ID);
+      var summarySandbox = worldManager.getSandbox(summaryWorldId);
+      if(!summarySandbox){
+        res.writeHead(404);
+        res.end(JSON.stringify({ ok:false, error:"找不到對應的 world（worldId:" + summaryWorldId + "）" }));
+        return;
+      }
       var summaryCompanyId = summaryAuth.ok ? summaryAuth.data.companyId : null;
       res.writeHead(200);
-      res.end(JSON.stringify({ ok:true, data: buildWorldSummary(sandbox.world, summaryCompanyId) }));
+      res.end(JSON.stringify({ ok:true, data: buildWorldSummary(summarySandbox.world, summaryCompanyId) }));
       return;
     }
 
@@ -315,10 +406,18 @@ function createRequestHandler(sandbox, wss){
       // [Phase 6B-2] 選填身份驗證：回傳完整 world，但其他真人玩家的
       // 私人資料（現金/建築/倉庫/財務…）會被遮蔽，只留自己的公司完整可見。
       // 沒帶 token 時等同「訪客」，看不到任何真人玩家的私人資料。
+      // [Phase 7C] worldId 解析方式同 /api/world/summary。
       var worldAuth = auth.requireAuth(req);
+      var targetWorldId = resolveWorldId(worldAuth, parseQueryWorldId(req) || DEFAULT_WORLD_ID);
+      var targetSandbox = worldManager.getSandbox(targetWorldId);
+      if(!targetSandbox){
+        res.writeHead(404);
+        res.end(JSON.stringify({ ok:false, error:"找不到對應的 world（worldId:" + targetWorldId + "）" }));
+        return;
+      }
       var worldCompanyId = worldAuth.ok ? worldAuth.data.companyId : null;
       res.writeHead(200);
-      res.end(JSON.stringify({ ok:true, data: sanitizeWorldForClient(sandbox.world, worldCompanyId) }));
+      res.end(JSON.stringify({ ok:true, data: sanitizeWorldForClient(targetSandbox.world, worldCompanyId) }));
       return;
     }
 
@@ -329,10 +428,20 @@ function createRequestHandler(sandbox, wss){
       var companyId  = authResult.ok ? authResult.data.companyId : null;
       // [Phase 6B] 沒有有效 token 時，companyId 會是 null，
       // handleAction() 內部會直接回覆「請重新登入」，不再做任何 fallback。
+      // [Phase 7C] worldId 一律從 token 取得（沒登入就沒有 worldId，
+      // 反正 handleAction 也會因為沒有 companyId 而拒絕，這裡用
+      // DEFAULT_WORLD_ID 只是給後面找 sandbox 用的安全預設值）。
+      var actionWorldId = resolveWorldId(authResult, DEFAULT_WORLD_ID);
+      var actionSandbox = worldManager.getSandbox(actionWorldId);
 
       var body = "";
       req.on("data", function(chunk){ body += chunk; });
       req.on("end", function(){
+        if(!actionSandbox){
+          res.writeHead(404);
+          res.end(JSON.stringify({ ok:false, error:"找不到對應的 world（worldId:" + actionWorldId + "），請重新登入" }));
+          return;
+        }
         var action;
         try{
           action = JSON.parse(body);
@@ -346,13 +455,14 @@ function createRequestHandler(sandbox, wss){
           res.end(JSON.stringify({ ok:false, error:"Action 必須包含 type 欄位" }));
           return;
         }
-        var result = handleAction(sandbox, action, companyId);
+        var result = handleAction(actionSandbox, action, companyId);
         res.writeHead(result.ok ? 200 : 400);
         res.end(JSON.stringify(result));
 
         // [Phase 5B] Action 成功後，廣播最新 world 狀態給所有連線的前端
-        if(result.ok && wss && wsServer){
-          wsServer.broadcastWorldUpdate(wss, sandbox);
+        // [Phase 7C] 只廣播給連到「同一個 world」的連線
+        if(result.ok && wss){
+          wsServer.broadcastWorldUpdate(wss, actionSandbox, actionWorldId);
         }
       });
       return;
@@ -360,7 +470,7 @@ function createRequestHandler(sandbox, wss){
 
     // ── 404 ──────────────────────────────────────────────────
     res.writeHead(404);
-    res.end(JSON.stringify({ ok:false, error:"找不到此路由。可用路由：GET /api/health, GET /api/world, GET /api/world/summary, POST /api/action" }));
+    res.end(JSON.stringify({ ok:false, error:"找不到此路由。可用路由：GET /api/health, GET /api/worlds, GET /api/world, GET /api/world/summary, POST /api/action" }));
   };
 }
 

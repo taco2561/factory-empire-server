@@ -1,7 +1,7 @@
 {
   "name": "factory-empire-server",
-  "version": "0.7.0-phase6b",
-  "description": "Factory Empire v3 - Phase 6B: 玩家資料模型與 playerId 關聯（為房間系統鋪路）",
+  "version": "0.8.0-phase7a",
+  "description": "Factory Empire v3 - Phase 7A: 多 World 資料庫模型（Main World + Tournament World）",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"

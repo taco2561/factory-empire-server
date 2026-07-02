@@ -62,6 +62,77 @@ async function ensureSchema(){
   await client`ALTER TABLE game_world DROP CONSTRAINT IF EXISTS game_world_single_row`;
   await client`CREATE UNIQUE INDEX IF NOT EXISTS idx_game_world_room_id ON game_world (room_id)`;
   await client`ALTER TABLE game_world_log ADD COLUMN IF NOT EXISTS room_id INTEGER NOT NULL DEFAULT 1`;
+
+  // ── [Phase 7A] 確定了不是通用房間系統，而是「Main World + Tournament
+  //    World」，room_id 這個命名語意不對，更名成 world_id。
+  //    用 DO 區塊做條件判斷：只有「room_id 還在、world_id 還沒出現」時
+  //    才更名，確保每次啟動重跑這段都是安全的（已經改過名就不會再跑）。
+  await client`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='game_world' AND column_name='room_id')
+         AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='game_world' AND column_name='world_id') THEN
+        ALTER TABLE game_world RENAME COLUMN room_id TO world_id;
+        ALTER INDEX idx_game_world_room_id RENAME TO idx_game_world_world_id;
+      END IF;
+    END $$;
+  `;
+  await client`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='game_world_log' AND column_name='room_id')
+         AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='game_world_log' AND column_name='world_id') THEN
+        ALTER TABLE game_world_log RENAME COLUMN room_id TO world_id;
+      END IF;
+    END $$;
+  `;
+
+  // ── [Phase 7A] worlds：每個 World（Main 或 Tournament）的中繼資料。
+  //    game_world.world_id 對應到這裡的 id，兩者是 1:1
+  //    （worlds 存「這個 world 是什麼」，game_world 存「目前狀態 JSONB」）。
+  await client`
+    CREATE TABLE IF NOT EXISTS worlds (
+      id          SERIAL PRIMARY KEY,
+      type        TEXT NOT NULL CHECK (type IN ('main','tournament')),
+      name        TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'scheduled'
+                  CHECK (status IN ('scheduled','active','ended','archived')),
+      starts_at   TIMESTAMPTZ,
+      ends_at     TIMESTAMPTZ,
+      settings    JSONB NOT NULL DEFAULT '{}',
+      created_by  BIGINT,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `;
+  await client`CREATE INDEX IF NOT EXISTS idx_worlds_status ON worlds (status)`;
+
+  // Main World 種子資料：固定 id=1，只有第一次啟動時會真的插入
+  await client`
+    INSERT INTO worlds (id, type, name, status)
+    VALUES (1, 'main', '主世界', 'active')
+    ON CONFLICT (id) DO NOTHING
+  `;
+  // 手動指定過 id=1，要把 SERIAL 序列往後推，避免下次自動產生 id 時撞號
+  await client`SELECT setval('worlds_id_seq', GREATEST((SELECT MAX(id) FROM worlds), 1))`;
+
+  // ── [Phase 7A] tournament_results：比賽結算榮譽榜（Tournament World
+  //    結束後寫入，就算之後把該 world 的 JSONB 卸載/清掉，排名結果仍保留）
+  await client`
+    CREATE TABLE IF NOT EXISTS tournament_results (
+      id               BIGSERIAL PRIMARY KEY,
+      world_id         INTEGER NOT NULL REFERENCES worlds(id),
+      player_id        BIGINT NOT NULL,
+      company_name     TEXT NOT NULL,
+      cash             NUMERIC NOT NULL,
+      buildings_value  NUMERIC NOT NULL,
+      stock_value      NUMERIC NOT NULL,
+      total_debt       NUMERIC NOT NULL,
+      net_worth        NUMERIC NOT NULL,
+      rank             INTEGER,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `;
+  await client`CREATE INDEX IF NOT EXISTS idx_tournament_results_world ON tournament_results (world_id)`;
 }
 
 // ── 讀取目前存檔（若資料庫裡還沒有任何資料，回傳 null）─────────

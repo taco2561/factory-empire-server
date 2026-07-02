@@ -60,6 +60,29 @@ async function ensureAuthSchema(){
   await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS room_id INTEGER NOT NULL DEFAULT 1`;
   await sql`CREATE INDEX IF NOT EXISTS idx_players_room_id ON players (room_id)`;
 
+  // ── [Phase 7A] room_id → world_id 更名（跟 db.js 的 game_world 一樣，
+  //    語意上是「World」不是通用房間，這裡統一命名）。條件式更名，
+  //    確保每次啟動重跑都是安全的 ──
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='players' AND column_name='room_id')
+         AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='players' AND column_name='world_id') THEN
+        ALTER TABLE players RENAME COLUMN room_id TO world_id;
+        ALTER INDEX idx_players_room_id RENAME TO idx_players_world_id;
+      END IF;
+    END $$;
+  `;
+
+  // ── [Phase 7A] 管理員權限 + 月卡到期時間 ──
+  // is_admin：只有你自己會被設成 true（部署後手動跑一次 SQL 設定，
+  //   不需要額外工具，見 Phase 7 規劃文件）。
+  // monthly_pass_expires_at：Tournament World 報名門檻。null 代表沒有
+  //   買過月卡；實際收款串接（Stripe 等）之後才會寫入這個欄位，這裡
+  //   先把欄位跟檢查邏輯準備好。
+  await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS monthly_pass_expires_at TIMESTAMPTZ`;
+
   await sql`
     CREATE TABLE IF NOT EXISTS player_login_log (
       id          BIGSERIAL PRIMARY KEY,
@@ -68,6 +91,40 @@ async function ensureAuthSchema(){
       ip          TEXT,
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     )
+  `;
+
+  // ── [Phase 7A] player_world_memberships：玩家 ↔ World ↔ 公司的關聯表。
+  //    取代原本 players.company_id 的「一個玩家只能對應一家公司」限制
+  //    ——多 World 架構下，同一個玩家帳號在 Main World 有一家公司，
+  //    報名 Tournament World 時會在那個 world 另外開一家新公司，
+  //    兩者互不影響。
+  //    （world_id 這裡故意不用型別上的 FK 綁死到 worlds.id 的建表順序，
+  //    而是在 server.js 的啟動流程裡確保 db.ensureSchema()（建立
+  //    worlds 表）一定先於這裡執行，所以可以安全加 FK。）
+  await sql`
+    CREATE TABLE IF NOT EXISTS player_world_memberships (
+      id          BIGSERIAL PRIMARY KEY,
+      player_id   BIGINT NOT NULL REFERENCES players(id),
+      world_id    INTEGER NOT NULL REFERENCES worlds(id),
+      company_id  TEXT NOT NULL,
+      joined_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (player_id, world_id)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS idx_pwm_player ON player_world_memberships (player_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_pwm_world  ON player_world_memberships (world_id)`;
+
+  // ── [Phase 7A] 資料回填：把既有 players.company_id 的資料，
+  //    各轉一筆 world_id=1（Main World）的 membership。
+  //    ON CONFLICT DO NOTHING 讓這段每次啟動重跑都是安全的，
+  //    也順便覆蓋「Phase 7A 上線後才註冊的新玩家」——因為 handleRegister/
+  //    handleLogin 目前還是只寫 players.company_id（還沒改成寫
+  //    membership，那是 Phase 7B/7C 的工作），這段回填等於暫時的橋接，
+  //    確保 player_world_memberships 隨時跟 players.company_id 同步。
+  await sql`
+    INSERT INTO player_world_memberships (player_id, world_id, company_id)
+    SELECT id, 1, company_id FROM players WHERE company_id IS NOT NULL
+    ON CONFLICT (player_id, world_id) DO NOTHING
   `;
 }
 

@@ -25,11 +25,16 @@ function initMarket(){
   }); return m;
 }
 
-function makeCompany(name, isPlayer, cash, npcType){
+function makeCompany(name, isPlayer, cash, npcType, playerId){
   return { id:uid(), name:name, isPlayer:!!isPlayer, cash:cash, warehouse:initWarehouse(), warehouseCost:initWarehouseCost(), buildings:[],
     finance:{ revenue:0, expenses:0, netProfitToday:0, wagesPaid:0, periodRevenue:0, periodExpense:0, periodProfit:0 },
     decisionLog:[], workers:0, npcType: npcType||null,
-    activityLog: {}
+    activityLog: {},
+    // [Phase 6B] 玩家資料關聯：playerId 對應 players.id（資料庫數字 id）。
+    // NPC 公司永遠是 null；玩家公司在 auth.js 建立時會帶入真正的 playerId。
+    // 有了這個欄位，company 底下所有巢狀資料（buildings/warehouse/finance...）
+    // 都透過 company 本身跟 playerId 建立起關聯，不需要另外拆表。
+    playerId: playerId || null,
   };
 }
 
@@ -193,6 +198,9 @@ function loadWorld(){
         Object.keys(PRODUCTS).forEach(function(pid){
           if(c.warehouseCost[pid]===undefined) c.warehouseCost[pid]=0;
         });
+        // 相容：[Phase 6B] 補齊玩家關聯欄位（舊存檔沒有 playerId/reception）
+        if(c.playerId===undefined) c.playerId=null;
+        if(c.isPlayerCompany && !c.reception) c.reception=makeDefaultReceptionState();
         // 相容：補齊銀行帳戶（bankAccount 由 ensureBankAccount 懶初始化，無需預建）
         // 相容：補齊期間財務欄位（股利系統 V2）
         if(c.finance){
@@ -271,11 +279,30 @@ function saveWorld(){
     localStorage.setItem("pe3_world_v3",JSON.stringify(world));
   }catch(e){}
 }
-function getPlayer(){ return world.companies.find(function(c){ return c.isPlayer; }); }
+// [Phase 6B] 加入可選的 companyId 參數：多人模式下每個 Action 都應該
+// 明確指定要操作哪家公司，而不是永遠抓「第一個 isPlayer 的公司」。
+// 不帶參數時維持原本行為（相容舊呼叫），方便單人模式/前端舊程式碼。
+function getPlayer(companyId){
+  if(companyId) return world.companies.find(function(c){ return c.id === companyId; }) || null;
+  return world.companies.find(function(c){ return c.isPlayer; });
+}
 
-function notify(msg){
-  world.notifications.unshift({ time:Date.now(), message:msg });
-  if(world.notifications.length>80) world.notifications.pop();
+// [Phase 6B-2] notify() 加入可選的 companyId 參數：
+//   - 帶 companyId：這則通知只屬於「這家公司」（例如：你借款成功、你的建築完工了），
+//     不應該被其他玩家看到。
+//   - 不帶 companyId（預設 null）：公開事件（選舉結果、國債發行、公司破產、
+//     IPO 上市…），本來就是所有人都看得到的經濟/社會新聞，維持公開。
+function notify(msg, companyId){
+  world.notifications.unshift({ time:Date.now(), message:msg, companyId: companyId||null });
+  if(world.notifications.length>200) world.notifications.pop();
+}
+
+// [Phase 6B-2] 依身份篩選通知：回傳「公開通知」＋「屬於這家公司自己的通知」，
+// 過濾掉其他玩家的私人通知。不帶 companyId 時只回傳公開通知（訪客/觀戰模式）。
+function getNotificationsFor(companyId){
+  return world.notifications.filter(function(n){
+    return !n.companyId || n.companyId === companyId;
+  });
 }
 
 function assignBuildingDisplayNames(company){

@@ -54,6 +54,14 @@ async function ensureSchema(){
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `;
+
+  // ── [Phase 6B] 為未來房間系統預留欄位（本階段不啟用房間邏輯，
+  //    只是先把欄位加上，避免 Phase 7 要大改資料表）──
+  //    room_id 預設 1，代表目前唯一的世界／大廳，行為完全不變。
+  await client`ALTER TABLE game_world ADD COLUMN IF NOT EXISTS room_id INTEGER NOT NULL DEFAULT 1`;
+  await client`ALTER TABLE game_world DROP CONSTRAINT IF EXISTS game_world_single_row`;
+  await client`CREATE UNIQUE INDEX IF NOT EXISTS idx_game_world_room_id ON game_world (room_id)`;
+  await client`ALTER TABLE game_world_log ADD COLUMN IF NOT EXISTS room_id INTEGER NOT NULL DEFAULT 1`;
 }
 
 // ── 讀取目前存檔（若資料庫裡還沒有任何資料，回傳 null）─────────

@@ -20,17 +20,19 @@ const auth = require("./auth");
 // ── Action 處理器：把 Action type 對應到 sandbox 內的遊戲函式 ──
 // sandbox 是 vm context，所有遊戲邏輯函式都在裡面
 // [Phase 6A] companyId 從 JWT token 取得，不再直接找 isPlayer:true
+// [Phase 6B] 不再有「沒有 token 就找 isPlayer:true」的向下相容 fallback：
+//   多人模式下這個 fallback 完全不安全（會操作到隨機找到的某家公司），
+//   且 Phase 6A 移除固定玩家公司後，isPlayer:true 的公司本來就不存在，
+//   fallback 只會回傳「找不到玩家公司」，不如直接明確要求登入。
 function handleAction(sandbox, action, companyId){
   var type    = action.type;
   var payload = action.payload || {};
   var s       = sandbox;
 
-  // 用 companyId 找玩家公司（Phase 6A：從 JWT 取得，不再找 isPlayer:true）
-  var player = companyId
-    ? s.world.companies.find(function(c){ return c.id === companyId; })
-    : s.world.companies.find(function(c){ return c.isPlayer; }); // 向下相容
+  if(!companyId) return { ok:false, error:"未登入或 token 已失效，請重新登入" };
 
-  if(!player) return { ok: false, error: "找不到玩家公司，請重新登入" };
+  var player = s.world.companies.find(function(c){ return c.id === companyId; });
+  if(!player) return { ok:false, error:"找不到玩家公司，請重新登入" };
   var pid = player.id;
 
   try{
@@ -65,7 +67,7 @@ function handleAction(sandbox, action, companyId){
 
       case "CANCEL_ORDER":
         // payload: { orderId }
-        var found = s.cancelOrder(payload.orderId);
+        var found = s.cancelOrder(pid, payload.orderId);
         return { ok: !!found };
 
       // ── 銀行 ─────────────────────────────────────────────────
@@ -139,18 +141,18 @@ function handleAction(sandbox, action, companyId){
       // ── 接待中心 ─────────────────────────────────────────────
       case "RECEPTION_SEARCH":
         // payload: {}
-        s.receptionSearchOrders(pid);
-        return { ok:true };
+        var r17b = s.receptionStartSearch(pid);
+        return r17b && r17b.ok ? { ok:true } : { ok:false, error: r17b ? r17b.msg : "開始尋找客戶失敗" };
 
       case "RECEPTION_DELIVER":
         // payload: { orderId }
         var r17 = s.receptionDeliverOrder(pid, payload.orderId);
-        return r17 && r17.ok ? { ok:true } : { ok:false, error: r17 ? r17.reason : "交付失敗" };
+        return r17 && r17.ok ? { ok:true } : { ok:false, error: r17 ? r17.msg : "交付失敗" };
 
       case "RECEPTION_REJECT":
-        // payload: { orderId }
-        s.receptionRejectOrder(pid, payload.orderId);
-        return { ok:true };
+        // payload: {}
+        var r18 = s.receptionRejectOrder(pid);
+        return r18 && r18.ok ? { ok:true } : { ok:false, error: r18 ? r18.msg : "拒絕失敗" };
 
       default:
         return { ok:false, error:"未知的 Action type：" + type };
@@ -161,9 +163,55 @@ function handleAction(sandbox, action, companyId){
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// [Phase 6B-2] 「共享世界」修正：大家在同一個 world 裡玩，不代表
+// 大家能看到彼此的操作/私人資料。這支函式回傳一份「對這個呼叫者
+// 安全」的 world 副本：
+//   - 自己的公司：完整資料（前端需要顯示自己的現金/建築/倉庫…）
+//   - NPC 公司：維持完整資料（遊戲機制需要：市場競爭觀察、AI 對手
+//     資訊、股票交易對象、政府訂單履行對象……這些原本就是公開的
+//     模擬經濟資料，不是「玩家隱私」）
+//   - 其他真人玩家的公司：只留公開欄位（id/name/isPlayerCompany/
+//     破產狀態），現金、建築、倉庫、財務、銀行帳戶、接待中心、
+//     決策紀錄、真實帳號名稱……全部拿掉
+//   - notifications：只回傳公開事件 + 呼叫者自己的私人通知
+// ══════════════════════════════════════════════════════════════
+function sanitizeWorldForClient(world, companyId){
+  var companies = world.companies.map(function(c){
+    if(c.id === companyId) return c;         // 自己的公司：完整資料
+    if(!c.isPlayerCompany) return c;         // NPC：維持公開（遊戲機制需要）
+    // 其他真人玩家：只留公開欄位
+    return {
+      id: c.id,
+      name: c.name,
+      isPlayer: true,
+      isPlayerCompany: true,
+      bankrupt: !!c.bankrupt,
+      workers: c.workers || 0,
+    };
+  });
+
+  var out = Object.assign({}, world, { companies: companies });
+  out.notifications = getNotificationsForClient(world, companyId);
+  return out;
+}
+
+// [Phase 6B-2] 依身份篩選通知（跟 state.js 內的 getNotificationsFor 同邏輯，
+// 獨立一份避免跨模組耦合；world.notifications 是原始資料，這裡只做過濾）
+function getNotificationsForClient(world, companyId){
+  return (world.notifications || []).filter(function(n){
+    return !n.companyId || n.companyId === companyId;
+  });
+}
+
 // ── 精簡版 world 摘要（給輪詢用，避免每次傳送整個 114KB 的 world）──
-function buildWorldSummary(world){
-  var player = world.companies.find(function(c){ return c.isPlayer; });
+// [Phase 6B] 加入 companyId 參數：回傳「呼叫者自己的公司」摘要。
+// 不帶 companyId（未登入／訪客）時 player 為 null，對應規劃中的
+// 觀戰模式（可以看 world 但看不到自己的公司資訊）。
+function buildWorldSummary(world, companyId){
+  var player = companyId
+    ? world.companies.find(function(c){ return c.id === companyId; })
+    : null;
   return {
     day:         world.day,
     tick:        world.tick,
@@ -253,16 +301,24 @@ function createRequestHandler(sandbox, wss){
 
     // ── GET /api/world/summary ───────────────────────────────
     if(req.method === "GET" && url === "/api/world/summary"){
+      // [Phase 6B] 選填身份驗證：有帶 token 就回傳「自己的公司」摘要，
+      // 沒帶 token（訪客／觀戰模式）仍可查看世界整體狀態，player 為 null。
+      var summaryAuth = auth.requireAuth(req);
+      var summaryCompanyId = summaryAuth.ok ? summaryAuth.data.companyId : null;
       res.writeHead(200);
-      res.end(JSON.stringify({ ok:true, data: buildWorldSummary(sandbox.world) }));
+      res.end(JSON.stringify({ ok:true, data: buildWorldSummary(sandbox.world, summaryCompanyId) }));
       return;
     }
 
     // ── GET /api/world ───────────────────────────────────────
     if(req.method === "GET" && url === "/api/world"){
-      // 回傳完整 world（約 114KB JSONB，前端渲染用）
+      // [Phase 6B-2] 選填身份驗證：回傳完整 world，但其他真人玩家的
+      // 私人資料（現金/建築/倉庫/財務…）會被遮蔽，只留自己的公司完整可見。
+      // 沒帶 token 時等同「訪客」，看不到任何真人玩家的私人資料。
+      var worldAuth = auth.requireAuth(req);
+      var worldCompanyId = worldAuth.ok ? worldAuth.data.companyId : null;
       res.writeHead(200);
-      res.end(JSON.stringify({ ok:true, data: sandbox.world }));
+      res.end(JSON.stringify({ ok:true, data: sanitizeWorldForClient(sandbox.world, worldCompanyId) }));
       return;
     }
 
@@ -271,8 +327,8 @@ function createRequestHandler(sandbox, wss){
       // [Phase 6A] 驗證 JWT，取得 companyId
       var authResult = auth.requireAuth(req);
       var companyId  = authResult.ok ? authResult.data.companyId : null;
-      // 向下相容：沒有 token 時仍嘗試找 isPlayer:true（方便舊版前端測試）
-      // 正式多人模式下，沒有 token 應該直接 401
+      // [Phase 6B] 沒有有效 token 時，companyId 會是 null，
+      // handleAction() 內部會直接回覆「請重新登入」，不再做任何 fallback。
 
       var body = "";
       req.on("data", function(chunk){ body += chunk; });
@@ -308,4 +364,4 @@ function createRequestHandler(sandbox, wss){
   };
 }
 
-module.exports = { createRequestHandler, buildWorldSummary };
+module.exports = { createRequestHandler, buildWorldSummary, sanitizeWorldForClient };

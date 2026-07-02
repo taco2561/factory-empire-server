@@ -74,7 +74,7 @@ function stockApplyIPO(companyId, ipoPrice){
   ipoPrice=Math.max(0.1, ipoPrice||1.0);
   var s=ensureStock();
   s.ipoQueue.push({ companyId:companyId, ipoPrice:ipoPrice, applyDay:world.day });
-  if(company.isPlayer) notify("📈 "+company.name+" 已提交上市申請（IPO 價格："+money(ipoPrice)+"）");
+  if(company.isPlayer) notify("📈 "+company.name+" 已提交上市申請（IPO 價格："+money(ipoPrice)+"）", company.id);
   return { ok:true };
 }
 
@@ -315,7 +315,7 @@ function tickStockDividends(){
     company.cash -= totalPaid;
 
     var label=company.isPlayer?"💰 "+company.name+" 發放股利：每股 "+money(perShare)+"，共 "+money(totalPaid)+"（配息率 "+Math.round(payoutRatio*100)+"%）":null;
-    if(label) notify(label);
+    if(label) notify(label, company.id);
     notify("📊 "+company.name+"（"+sc.symbol+"）每股股利："+money(perShare)+"　本期淨利："+money(periodProfit));
 
     // ── 結算完成：重置期間資料，開始累積下一個週期 ──

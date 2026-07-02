@@ -89,7 +89,7 @@ function takeLoan(companyId, amount, termDays) {
   };
   acc.loans.push(loan);
   company.cash += amount;
-  if (company.isPlayer) notify('🏦 借款 ' + money(amount) + '（' + termDays + '天期，利率 ' + (rate * 100).toFixed(0) + '%，每日還款 ' + money(dailyRepay) + '）');
+  if (company.isPlayer) notify('🏦 借款 ' + money(amount) + '（' + termDays + '天期，利率 ' + (rate * 100).toFixed(0) + '%，每日還款 ' + money(dailyRepay) + '）', company.id);
   return { ok: true, loan: loan };
 }
 
@@ -107,7 +107,7 @@ function depositDemand(companyId, amount) {
     rate:    DEPOSIT_RATE_DEMAND,
     accrued: 0, // 累積利息
   });
-  if (company.isPlayer) notify('🏦 活期存款 ' + money(amount) + '（年利率 ' + (DEPOSIT_RATE_DEMAND * 100).toFixed(0) + '%/天）');
+  if (company.isPlayer) notify('🏦 活期存款 ' + money(amount) + '（年利率 ' + (DEPOSIT_RATE_DEMAND * 100).toFixed(0) + '%/天）', company.id);
   return { ok: true };
 }
 
@@ -129,7 +129,7 @@ function depositFixed(companyId, amount, termDays) {
     rate:     rate,
     matured:  false,
   });
-  if (company.isPlayer) notify('🏦 定期存款 ' + money(amount) + '（' + termDays + '天，利率 ' + (rate * 100).toFixed(0) + '%）');
+  if (company.isPlayer) notify('🏦 定期存款 ' + money(amount) + '（' + termDays + '天，利率 ' + (rate * 100).toFixed(0) + '%）', company.id);
   return { ok: true };
 }
 
@@ -144,7 +144,7 @@ function withdrawDemand(companyId, depositId) {
   var total = dep.amount + dep.accrued;
   company.cash += total;
   acc.deposits.splice(idx, 1);
-  if (company.isPlayer) notify('🏦 活期提款 ' + money(total) + '（本金 ' + money(dep.amount) + ' + 利息 ' + money(dep.accrued) + '）');
+  if (company.isPlayer) notify('🏦 活期提款 ' + money(total) + '（本金 ' + money(dep.amount) + ' + 利息 ' + money(dep.accrued) + '）', company.id);
   return { ok: true, total: total };
 }
 
@@ -172,7 +172,7 @@ function withdrawFixed(companyId, depositId) {
   world.bank.wallet            -= interest;
   world.bank.totalInterestPaid += interest;
   acc.deposits.splice(idx, 1);
-  if (company.isPlayer) notify('🏦 定期' + (isMatured ? '到期' : '提前解約') + penalty + '：取回 ' + money(total) + '（利息 ' + money(interest) + '）');
+  if (company.isPlayer) notify('🏦 定期' + (isMatured ? '到期' : '提前解約') + penalty + '：取回 ' + money(total) + '（利息 ' + money(interest) + '）', company.id);
   return { ok: true, total: total, interest: interest, early: !isMatured };
 }
 
@@ -207,7 +207,7 @@ function tickBankSystem() {
       world.bank.totalInterestPaid += interest;
       var idx = acc.deposits.indexOf(dep);
       if (idx !== -1) acc.deposits.splice(idx, 1);
-      if (company.isPlayer) notify('🏦 定期存款到期：取回 ' + money(total) + '（利息 ' + money(interest) + '）');
+      if (company.isPlayer) notify('🏦 定期存款到期：取回 ' + money(total) + '（利息 ' + money(interest) + '）', company.id);
     });
 
     // ③ 貸款每日還款
@@ -232,7 +232,7 @@ function tickBankSystem() {
         acc.defaultCount++;
         acc.goodDays = 0;
         hadLate = true;
-        if (company.isPlayer) notify('⚠️ 貸款逾期！現金不足，今日未能還款（剩 ' + money(loan.remaining) + '）');
+        if (company.isPlayer) notify('⚠️ 貸款逾期！現金不足，今日未能還款（剩 ' + money(loan.remaining) + '）', company.id);
       }
     });
 
@@ -277,14 +277,14 @@ function updateCreditRating(company, acc, hadLate) {
     // 降一級
     if (idx < order.length - 1) {
       acc.creditRating = order[idx + 1];
-      if (company.isPlayer) notify('📉 信用評級下降：' + creditLabel(acc.creditRating));
+      if (company.isPlayer) notify('📉 信用評級下降：' + creditLabel(acc.creditRating), company.id);
     }
   } else {
     // 累積 goodDays，達門檻升一級
     if (acc.goodDays >= CREDIT_UPGRADE_DAYS && idx > 0) {
       acc.creditRating = order[idx - 1];
       acc.goodDays = 0;
-      if (company.isPlayer) notify('📈 信用評級提升：' + creditLabel(acc.creditRating));
+      if (company.isPlayer) notify('📈 信用評級提升：' + creditLabel(acc.creditRating), company.id);
     }
   }
 }

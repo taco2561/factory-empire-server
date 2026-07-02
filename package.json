@@ -1,7 +1,7 @@
 {
   "name": "factory-empire-server",
-  "version": "0.6.0-phase6a",
-  "description": "Factory Empire v3 - Phase 6A: Player auth system (register/login/JWT)",
+  "version": "0.7.0-phase6b",
+  "description": "Factory Empire v3 - Phase 6B: 玩家資料模型與 playerId 關聯（為房間系統鋪路）",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"

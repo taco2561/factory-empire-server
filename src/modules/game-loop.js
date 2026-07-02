@@ -8,7 +8,7 @@ function tick(){
     company.buildings.forEach(function(b){
       if(!b.isCompleted&&b.endTime<=gameNow()){
         b.isCompleted=true;
-        if(company.isPlayer) notify("🏗️ "+BUILDINGS[b.type].emoji+" "+(b.displayName||BUILDINGS[b.type].name)+" 建造完成！");
+        if(company.isPlayer) notify("🏗️ "+BUILDINGS[b.type].emoji+" "+(b.displayName||BUILDINGS[b.type].name)+" 建造完成！", company.id);
       }
     });
   });
@@ -23,7 +23,7 @@ function tick(){
         var job=q.shift();
         var unitCost=job.amount>0?(job.totalCost||0)/job.amount:0;
         warehouseIn(company,job.product,job.amount,unitCost);
-        if(company.isPlayer) notify("📦 "+job.amount+" 件 "+PRODUCTS[job.product].name+" 生產完成！（"+(b.displayName||BUILDINGS[b.type].name)+"）");
+        if(company.isPlayer) notify("📦 "+job.amount+" 件 "+PRODUCTS[job.product].name+" 生產完成！（"+(b.displayName||BUILDINGS[b.type].name)+"）", company.id);
 
         // ── 循環生產：本輪完成後自動續轉下一輪 ──────────────
         if(job.isAutoRepeat && !job.repeatStopped){
@@ -36,13 +36,13 @@ function tick(){
                 product: job.product, amount: job.amount,
                 repeatLeft: nextLeft, repeatTotal: job.repeatTotal,
               };
-              if(company.isPlayer) notify("⏸️ 循環生產暫停等待中（"+PRODUCTS[job.product].name+"）："+res.msg);
+              if(company.isPlayer) notify("⏸️ 循環生產暫停等待中（"+PRODUCTS[job.product].name+"）："+res.msg, company.id);
             }
           } else if(company.isPlayer){
-            notify("✅ 循環生產完成！"+PRODUCTS[job.product].name+" 共 "+job.repeatTotal+" 輪");
+            notify("✅ 循環生產完成！"+PRODUCTS[job.product].name+" 共 "+job.repeatTotal+" 輪", company.id);
           }
         } else if(job.isAutoRepeat && job.repeatStopped && company.isPlayer){
-          notify("⏹️ 循環生產已停止（"+PRODUCTS[job.product].name+"）");
+          notify("⏹️ 循環生產已停止（"+PRODUCTS[job.product].name+"）", company.id);
         }
       }
 
@@ -52,7 +52,7 @@ function tick(){
         var res2 = tryStartNextRepeatRound(company.id, b.id, p.product, p.amount, p.repeatLeft, p.repeatTotal);
         if(res2.ok){
           b._pendingRepeat = null;
-          if(company.isPlayer) notify("▶️ 循環生產恢復："+PRODUCTS[p.product].name);
+          if(company.isPlayer) notify("▶️ 循環生產恢復："+PRODUCTS[p.product].name, company.id);
         }
       }
     });

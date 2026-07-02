@@ -193,8 +193,13 @@ function createOrder(companyId, productId, side, qty, price){
   matchOrders(productId);
   return order;
 }
-function cancelOrder(orderId){
-  var player=getPlayer(); var found=false;
+// [Phase 6B] 加入 companyId 參數：只能取消「自己」公司底下的訂單。
+// 修正前：靠全域 getPlayer() 猜測是哪家公司，多人模式下完全不安全
+// （而且 Phase 6A 移除固定玩家公司後，getPlayer() 會直接回傳 undefined，
+// 導致這支函式必噴錯）。
+function cancelOrder(companyId, orderId){
+  var player=getPlayer(companyId); var found=false;
+  if(!player) return false;
   Object.values(world.market).forEach(function(m){
     ["buy","sell"].forEach(function(side){
       var idx=m.orderBook[side].findIndex(function(o){ return o.id===orderId&&o.companyId===player.id; });
@@ -208,7 +213,7 @@ function cancelOrder(orderId){
         player.cash+=order.remaining*order.price;
       }
       m.orderBook[side].splice(idx,1);
-      notify("🚫 取消訂單："+PRODUCTS[order.productId].name+(side==="sell"?" 賣":" 買")+"單");
+      if(player.isPlayer) notify("🚫 取消訂單："+PRODUCTS[order.productId].name+(side==="sell"?" 賣":" 買")+"單", player.id);
       found=true;
     });
   }); return found;
@@ -381,7 +386,7 @@ function tickConsumers(){
         world.consumerPrefs[p.id]=(world.consumerPrefs[p.id]||0)+canBuy;
         if(owner&&owner.isPlayer){
           var venueLabel=v.type==="supermarket"?"超市":v.type==="restaurant"?"餐廳":"服飾店";
-          notify("🛍️ "+venueLabel+" 售出 "+canBuy+" 件 "+p.name+"，收入 "+money(revenue));
+          notify("🛍️ "+venueLabel+" 售出 "+canBuy+" 件 "+p.name+"，收入 "+money(revenue), owner.id);
         }
       });
     });

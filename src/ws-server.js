@@ -34,8 +34,13 @@ function broadcast(wss, message){
 
 // ── 建立 world summary（與 api.js 的 buildWorldSummary 相同邏輯，
 //    獨立一份避免循環依賴）────────────────────────────────────
-function buildSummary(world){
-  var player = world.companies.find(function(c){ return c.isPlayer; });
+// [Phase 6B] 加入 companyId 參數：回傳「這個連線自己的公司」摘要，
+// 而不是全域搜尋一個 isPlayer 公司（多人模式下每個連線的 companyId
+// 都不同，這份資料本來就該是各自獨立的）。
+function buildSummary(world, companyId){
+  var player = companyId
+    ? world.companies.find(function(c){ return c.id === companyId; })
+    : null;
   return {
     day:     world.day,
     tick:    world.tick,
@@ -52,8 +57,46 @@ function buildSummary(world){
     } : null,
     aliveNpc:    world.companies.filter(function(c){ return !c.isPlayer && !c.bankrupt; }).length,
     bankruptNpc: world.companies.filter(function(c){ return !c.isPlayer && c.bankrupt; }).length,
-    notifications: (world.notifications || []).slice(0, 5), // 最新5則通知
+    // [Phase 6B-2] 只回傳這個連線看得到的通知（公開事件 + 自己的私人通知）
+    notifications: (world.notifications || []).filter(function(n){
+      return !n.companyId || n.companyId === companyId;
+    }).slice(0, 5),
   };
+}
+
+// ── 傳送給單一連線（帶入該連線自己的 companyId）────────────────
+function sendToClient(client, message){
+  if(client.readyState === WebSocket.OPEN){
+    client.send(JSON.stringify(message));
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// [Phase 6B-2] 「共享世界」修正：跟 api.js 的同名函式邏輯完全一致，
+// 獨立一份避免循環依賴（api.js 已經 require 了 ws-server.js，
+// 這裡不能反過來 require api.js）。
+//   - 自己的公司：完整資料
+//   - NPC 公司：維持公開（遊戲機制需要）
+//   - 其他真人玩家：只留公開欄位，私人資料（現金/建築/倉庫…）拿掉
+// ══════════════════════════════════════════════════════════════
+function sanitizeWorldForClient(world, companyId){
+  var companies = world.companies.map(function(c){
+    if(c.id === companyId) return c;
+    if(!c.isPlayerCompany) return c;
+    return {
+      id: c.id,
+      name: c.name,
+      isPlayer: true,
+      isPlayerCompany: true,
+      bankrupt: !!c.bankrupt,
+      workers: c.workers || 0,
+    };
+  });
+  var out = Object.assign({}, world, { companies: companies });
+  out.notifications = (world.notifications || []).filter(function(n){
+    return !n.companyId || n.companyId === companyId;
+  });
+  return out;
 }
 
 // ── 建立 WebSocket server，掛在既有的 HTTP server 上 ─────────
@@ -84,9 +127,10 @@ function createWebSocketServer(httpServer, sandbox){
     console.log("[Phase5A WS] 目前連線數：" + wss.clients.size);
 
     // 連線後立即推送一次當前 world 狀態，讓前端馬上有資料可以顯示
+    // [Phase 6B] 帶入這個連線自己的 companyId，回傳自己的公司資料
     ws.send(JSON.stringify({
       type: "WORLD_UPDATE",
-      data: buildSummary(sandbox.world),
+      data: buildSummary(sandbox.world, ws.companyId),
     }));
 
     // 接收前端訊息
@@ -118,22 +162,27 @@ function createWebSocketServer(httpServer, sandbox){
 // 這個函式由 server.js 的 tick 迴圈呼叫。
 // Phase 5A：每個 tick 廣播一次輕量 TICK 訊息；
 //           每個遊戲天（dayTick === 0）廣播一次完整 WORLD_UPDATE。
+// [Phase 6B] WORLD_UPDATE 內含「自己的公司」資料，每個連線的
+// companyId 不同，因此改成逐一連線各自送出個人化內容，
+// 不能再用同一份 broadcast() 送給所有人。
 function broadcastTick(wss, sandbox){
   if(!wss || wss.clients.size === 0) return; // 沒有人連線就不廣播
 
   var world = sandbox.world;
 
-  // 每 tick 送輕量更新（只有 day/tick/dayTick，保持畫面計時器跳動）
+  // 每 tick 送輕量更新（只有 day/tick/dayTick，不含玩家資料，全體廣播即可）
   broadcast(wss, {
     type: "TICK",
     data: { day: world.day, tick: world.tick, dayTick: world.dayTick },
   });
 
-  // 每個遊戲天結束（dayTick 剛重置為 0）送完整 world summary
+  // 每個遊戲天結束（dayTick 剛重置為 0）送完整 world summary（各自個人化）
   if(world.dayTick === 0){
-    broadcast(wss, {
-      type: "WORLD_UPDATE",
-      data: buildSummary(world),
+    wss.clients.forEach(function(client){
+      sendToClient(client, {
+        type: "WORLD_UPDATE",
+        data: buildSummary(world, client.companyId),
+      });
     });
   }
 }
@@ -141,10 +190,17 @@ function broadcastTick(wss, sandbox){
 module.exports = { createWebSocketServer, broadcastTick, buildSummary, broadcastWorldUpdate };
 
 // ── [Phase 5B] 廣播完整 world 給所有前端（Action 執行後呼叫）─
+// [Phase 6B-2] 原本用 broadcast() 把「完全相同、未過濾」的 world
+// 送給所有連線，等於每次任何人操作，所有人都收到所有其他玩家的
+// 完整資料（現金/建築/倉庫…）。改成逐一連線各自送出「遮蔽過的」
+// world，每個人只看得到自己的完整資料 + NPC 公開資料 + 其他玩家
+// 的公開欄位。
 function broadcastWorldUpdate(wss, sandbox){
   if(!wss || wss.clients.size === 0) return;
-  broadcast(wss, {
-    type: "WORLD_FULL_UPDATE",
-    data: sandbox.world,
+  wss.clients.forEach(function(client){
+    sendToClient(client, {
+      type: "WORLD_FULL_UPDATE",
+      data: sanitizeWorldForClient(sandbox.world, client.companyId),
+    });
   });
 }

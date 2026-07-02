@@ -600,7 +600,7 @@ function govSubscribeBond(bondId, buyerCompanyId, amount){
     });
   }
 
-  if(buyer.isPlayer) notify("💰 你認購了國債 "+money(actualAmount)+"，預計總利息 "+money(totalInterest));
+  if(buyer.isPlayer) notify("💰 你認購了國債 "+money(actualAmount)+"，預計總利息 "+money(totalInterest), buyer.id);
   return {ok:true, amount:actualAmount};
 }
 
@@ -680,7 +680,7 @@ function govTickBondInterest(){
         var receiver=world.companies.find(function(c){ return c.id===h.ownerId; });
         if(receiver){
           receiver.cash += dailyInterest;
-          if(receiver.isPlayer) notify("💵 國債利息入帳："+money(dailyInterest));
+          if(receiver.isPlayer) notify("💵 國債利息入帳："+money(dailyInterest), receiver.id);
         }
       }
 

@@ -49,20 +49,28 @@ function generateConstructionOrder() {
   };
 }
 
-// ── 取得玩家的接待中心建築（第一個完工的） ──────────────────
-function getPlayerReceptionBuilding() {
-  var player = getPlayer();
-  return player.buildings.find(function(b) {
+// ══════════════════════════════════════════════════════════════
+// [Phase 6B] 重要修正：接待中心狀態原本掛在 world.reception（單一
+// 全域物件），單人模式下沒問題，但多人模式下「所有玩家共用同一份
+// 尋找客戶進度／訂單」，會互相覆蓋彼此的接待中心。
+// 這裡把狀態改成掛在各自的 company.reception 上，並讓所有函式改成
+// 接收 companyId 參數，操作對象一律是「呼叫者自己的公司」，
+// 不再依賴全域 getPlayer() 找到「唯一的玩家」。
+// ══════════════════════════════════════════════════════════════
+
+// ── 取得指定公司的接待中心建築（第一個完工的） ──────────────
+function getPlayerReceptionBuilding(company) {
+  return company.buildings.find(function(b) {
     return b.isCompleted && b.type === "reception_center";
   }) || null;
 }
 
-// ── 取得玩家的接待中心狀態（掛在 world 上） ─────────────────
-function getReceptionState() {
-  if (!world.reception) {
-    world.reception = makeDefaultReceptionState();
+// ── 取得指定公司的接待中心狀態（懶初始化，掛在 company 上）────
+function getReceptionState(company) {
+  if (!company.reception) {
+    company.reception = makeDefaultReceptionState();
   }
-  return world.reception;
+  return company.reception;
 }
 
 function makeDefaultReceptionState() {
@@ -76,11 +84,13 @@ function makeDefaultReceptionState() {
   };
 }
 
-// ── 開始尋找客戶 ─────────────────────────────────────────────
-function receptionStartSearch() {
-  var player = getPlayer();
-  var rc = getReceptionState();
-  var bldg = getPlayerReceptionBuilding();
+// ── 開始尋找客戶（companyId：呼叫者自己的公司 id）────────────
+function receptionStartSearch(companyId) {
+  var player = getPlayer(companyId);
+  if (!player) return { ok: false, msg: "找不到公司，請重新登入" };
+
+  var rc = getReceptionState(player);
+  var bldg = getPlayerReceptionBuilding(player);
 
   if (!bldg) return { ok: false, msg: "尚未有完工的接待中心" };
   if (rc.searching) return { ok: false, msg: "已在尋找客戶中" };
@@ -98,36 +108,48 @@ function receptionStartSearch() {
   rc.searchEndTime = now + RECEPTION_SEARCH_DURATION_MS;
   rc.currentOrder = null;
 
-  notify("🏢 接待中心開始尋找客戶（支付開發費 " + money(RECEPTION_SEARCH_COST) + "）");
+  if (player.isPlayer) notify("🏢 接待中心開始尋找客戶（支付開發費 " + money(RECEPTION_SEARCH_COST) + "）", player.id);
   return { ok: true };
 }
 
 // ── 接受訂單 ─────────────────────────────────────────────────
-function receptionAcceptOrder() {
-  var rc = getReceptionState();
+function receptionAcceptOrder(companyId) {
+  var player = getPlayer(companyId);
+  if (!player) return { ok: false, msg: "找不到公司，請重新登入" };
+
+  var rc = getReceptionState(player);
   if (!rc.currentOrder) return { ok: false, msg: "目前沒有待接訂單" };
   if (rc.searching) return { ok: false, msg: "仍在尋找客戶中" };
   // 訂單已在 currentOrder，接受即保留，立刻開始下一次尋找
-  notify("✅ 已接受訂單：" + orderLabel(rc.currentOrder));
+  if (player.isPlayer) notify("✅ 已接受訂單：" + orderLabel(rc.currentOrder), player.id);
   return { ok: true };
 }
 
 // ── 拒絕訂單 ─────────────────────────────────────────────────
-function receptionRejectOrder() {
-  var rc = getReceptionState();
+function receptionRejectOrder(companyId) {
+  var player = getPlayer(companyId);
+  if (!player) return { ok: false, msg: "找不到公司，請重新登入" };
+
+  var rc = getReceptionState(player);
   if (!rc.currentOrder) return { ok: false, msg: "目前沒有待接訂單" };
-  notify("🚫 已拒絕訂單：" + orderLabel(rc.currentOrder));
+  if (player.isPlayer) notify("🚫 已拒絕訂單：" + orderLabel(rc.currentOrder), player.id);
   rc.currentOrder = null;
   // 立即開始下一次尋找
-  receptionStartSearch();
+  receptionStartSearch(companyId);
   return { ok: true };
 }
 
-// ── 交付訂單 ─────────────────────────────────────────────────
-function receptionDeliverOrder() {
-  var player = getPlayer();
-  var rc = getReceptionState();
+// ── 交付訂單（orderId 選填：若提供則驗證跟目前的訂單一致，避免
+//    前端顯示過期資料時交付到錯誤的訂單）──────────────────────
+function receptionDeliverOrder(companyId, orderId) {
+  var player = getPlayer(companyId);
+  if (!player) return { ok: false, msg: "找不到公司，請重新登入" };
+
+  var rc = getReceptionState(player);
   if (!rc.currentOrder) return { ok: false, msg: "目前沒有進行中的訂單" };
+  if (orderId && rc.currentOrder.id !== orderId) {
+    return { ok: false, msg: "訂單已變更，請重新整理後再試" };
+  }
 
   var order = rc.currentOrder;
 
@@ -154,33 +176,35 @@ function receptionDeliverOrder() {
 
   rc.totalOrdersCompleted++;
   rc.totalEarned += order.reward;
-  notify("🏆 訂單交付成功！獲得 " + money(order.reward) + "（" + orderLabel(order) + "）");
+  if (player.isPlayer) notify("🏆 訂單交付成功！獲得 " + money(order.reward) + "（" + orderLabel(order) + "）", player.id);
 
   rc.currentOrder = null;
 
   // 立即開始下一次尋找
-  receptionStartSearch();
+  receptionStartSearch(companyId);
 
   return { ok: true };
 }
 
-// ── tick 檢查：尋找客戶是否完成 ─────────────────────────────
+// ── tick 檢查：對每一家有接待中心的玩家公司各自檢查尋找客戶是否完成 ──
 function tickReception() {
-  var bldg = getPlayerReceptionBuilding();
-  if (!bldg) return; // 玩家尚未建造接待中心
+  world.companies.filter(function(c){ return c.isPlayerCompany; }).forEach(function(company){
+    var bldg = getPlayerReceptionBuilding(company);
+    if (!bldg) return; // 這家公司尚未建造接待中心
 
-  var rc = getReceptionState();
-  if (!rc.searching) return;
+    var rc = getReceptionState(company);
+    if (!rc.searching) return;
 
-  var now = Date.now();
+    var now = Date.now();
 
-  // 判斷是否完成尋找
-  if (now >= rc.searchEndTime) {
-    rc.searching = false;
-    var order = generateConstructionOrder();
-    rc.currentOrder = order;
-    notify("📋 接待中心找到新客戶！" + orderLabel(order) + "，獎勵 " + money(order.reward));
-  }
+    // 判斷是否完成尋找
+    if (now >= rc.searchEndTime) {
+      rc.searching = false;
+      var order = generateConstructionOrder();
+      rc.currentOrder = order;
+      if (company.isPlayer) notify("📋 接待中心找到新客戶！" + orderLabel(order) + "，獎勵 " + money(order.reward), company.id);
+    }
+  });
 }
 
 // ── 輔助：訂單文字描述 ───────────────────────────────────────
@@ -190,8 +214,9 @@ function orderLabel(order) {
 }
 
 // ── 輔助：計算訂單所需材料是否足夠（給 UI 用） ──────────────
-function orderCanDeliver(order) {
-  var player = getPlayer();
+function orderCanDeliver(order, companyId) {
+  var player = getPlayer(companyId);
+  if (!player) return false;
   return Object.keys(order.required).every(function(pid) {
     return (player.warehouse[pid] || 0) >= order.required[pid];
   });

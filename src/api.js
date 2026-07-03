@@ -461,8 +461,10 @@ function createRequestHandler(wss){
 
         // [Phase 5B] Action 成功後，廣播最新 world 狀態給所有連線的前端
         // [Phase 7C] 只廣播給連到「同一個 world」的連線
+        // [Phase 7C-fix] 只送給操作者自己開著的分頁，不再廣播給全部人
+        // （降低不必要的流量——見 ws-server.js 的 broadcastWorldUpdate 註解）
         if(result.ok && wss){
-          wsServer.broadcastWorldUpdate(wss, actionSandbox, actionWorldId);
+          wsServer.broadcastWorldUpdate(wss, actionSandbox, actionWorldId, companyId);
         }
       });
       return;

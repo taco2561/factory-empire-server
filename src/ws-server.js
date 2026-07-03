@@ -147,6 +147,16 @@ function createWebSocketServer(httpServer){
 
     console.log("[WS] 目前連線數：" + wss.clients.size);
 
+    // [Phase 7C-fix] 標準的 ws 心跳偵測：瀏覽器分頁被直接關掉、電腦睡眠、
+    // 網路忽然斷線這幾種情況，TCP 連線可能不會乾淨地觸發 "close" 事件，
+    // 導致這個連線變成「殭屍連線」——一直留在 wss.clients 裡，持續收到
+    // 廣播，卻沒有真正的使用者在另一端接收，白白浪費流量。
+    // 用底層的 WebSocket ping/pong frame（不是我們自己在 JSON 訊息裡定義
+    // 的 PING/PONG，那個只是給前端顯示連線狀態用的）偵測連線是否還活著，
+    // 沒有在下一輪心跳前回應就直接終止。
+    ws.isAlive = true;
+    ws.on("pong", function(){ ws.isAlive = true; });
+
     var sandbox = worldManager.getSandbox(ws.worldId);
     if(!sandbox){
       console.warn("[WS] worldId " + ws.worldId + " 尚未載入，關閉這個連線");
@@ -183,6 +193,21 @@ function createWebSocketServer(httpServer){
   });
 
   console.log("[WS] WebSocket Server 已建立，共用 HTTP server port");
+
+  // [Phase 7C-fix] 每 30 秒檢查一次所有連線：上一輪沒有回應 pong 的
+  // 就直接終止（代表對面已經斷線但我們還不知道）。
+  var heartbeatInterval = setInterval(function(){
+    wss.clients.forEach(function(client){
+      if(client.isAlive === false){
+        console.log("[WS] 偵測到殭屍連線（無回應），終止：" + (client.username || "unknown"));
+        return client.terminate();
+      }
+      client.isAlive = false;
+      client.ping();
+    });
+  }, 30000);
+  wss.on("close", function(){ clearInterval(heartbeatInterval); });
+
   return wss;
 }
 
@@ -227,11 +252,19 @@ module.exports = { createWebSocketServer, broadcastTick, buildSummary, broadcast
 // 的公開欄位。
 // [Phase 7C] 加入 worldId 參數：只送給連到「這個 world」的連線
 // （避免 Tournament World 的操作結果被廣播到 Main World 的連線）。
-function broadcastWorldUpdate(wss, sandbox, worldId){
+// [Phase 7C-fix] 加入 actingCompanyId 參數：只送給「操作者自己」
+// 開著的分頁（支援多分頁同步），不再廣播給這個 world 裡的所有連線。
+// 原因：其他玩家本來就看不到別人操作的私人資料（隱私已遮蔽），沒
+// 必要即時收到別人操作後的整包 world（約150~200KB）——這是實測發現
+// Railway Egress 流量異常暴增的主因：每次任何操作都把整包資料重複
+// 傳給所有連線的分頁，長期累積下來流量非常可觀。其他人該看到的公開
+// 資訊（天數/景氣等）仍會透過既有的「每日結算」輕量廣播照常更新。
+function broadcastWorldUpdate(wss, sandbox, worldId, actingCompanyId){
   if(!wss || wss.clients.size === 0) return;
   worldId = worldId || DEFAULT_WORLD_ID;
   wss.clients.forEach(function(client){
     if(client.worldId !== worldId) return;
+    if(actingCompanyId && client.companyId !== actingCompanyId) return; // 只送給操作者自己（含多分頁）
     sendToClient(client, {
       type: "WORLD_FULL_UPDATE",
       data: sanitizeWorldForClient(sandbox.world, client.companyId),

@@ -1,7 +1,7 @@
 {
   "name": "factory-empire-server",
-  "version": "0.10.0-phase7c",
-  "description": "Factory Empire v3 - Phase 7C: API/WebSocket 改為 worldId 感知動態路由",
+  "version": "0.10.1-phase7c-fix",
+  "description": "Factory Empire v3 - Phase 7C-fix: 修正 WORLD_FULL_UPDATE 廣播範圍過大導致流量異常暴增的問題",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"

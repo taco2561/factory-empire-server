@@ -268,6 +268,53 @@ function trackActivity(company, productId, action, qty){
   company.activityLog[key] = (company.activityLog[key]||0)+qty;
 }
 
+// ══════════════════════════════════════════════════════════════
+// [資料膨脹修正] 清理過期的未成交訂單
+//
+// 問題：掛單只有「完全成交」或「玩家手動取消」兩種方式離開訂單簿。
+// 81 家 NPC 每天在 20+ 種商品上掛買賣單，凡是價格沒對上的單就永遠
+// 留在訂單簿裡——長期營運下來（例如 1600+ 天），訂單簿會累積成千上
+// 萬筆殭屍訂單，讓整包 world JSON 膨脹到數 MB。後果：
+//   - 每次完整同步（API 抓取 / WebSocket 推送）都要傳這一大包 → 流量爆量
+//   - 前端下載+解析+重繪一大包 → 操作後畫面延遲十幾秒
+//   - 每個 tick 存回資料庫也是這一大包 → 資料庫寫入負擔
+//   - 掛買單鎖住的現金永遠回不去 → NPC 資金慢慢消失，扭曲經濟
+//
+// 修法：每個遊戲天結算時清一次，超過 ORDER_EXPIRY_MS 未成交的訂單
+// 直接移除，並沿用 cancelOrder 既有的退還邏輯：買單退還鎖住的現金、
+// 賣單退還商品。沒有 time 欄位的老舊訂單視為已過期（第一次執行時
+// 會把歷史累積的殭屍訂單一次清光）。
+// ══════════════════════════════════════════════════════════════
+var ORDER_EXPIRY_MS = 10 * 60 * 1000; // 10 個遊戲天（1 遊戲天 = 60 秒真實時間）
+
+function expireStaleOrders(){
+  var now = Date.now();
+  var expired = 0;
+  Object.keys(world.market).forEach(function(pid){
+    var m = world.market[pid];
+    ["buy","sell"].forEach(function(side){
+      var book = m.orderBook[side];
+      for(var i = book.length - 1; i >= 0; i--){
+        var o = book[i];
+        if(o.time && now - o.time <= ORDER_EXPIRY_MS) continue; // 還沒過期
+        var comp = world.companies.find(function(c){ return c.id === o.companyId; });
+        if(comp){
+          if(side === "buy"){
+            comp.cash += o.remaining * o.price; // 退還掛買單時鎖住的現金
+          } else {
+            var retCost = m.price || PRODUCTS[pid].basePrice;
+            warehouseIn(comp, pid, o.remaining, retCost); // 退還掛賣單時扣走的商品
+          }
+        }
+        book.splice(i, 1);
+        expired++;
+      }
+    });
+  });
+  if(expired > 0) console.log("[Economy] 清理過期未成交訂單 " + expired + " 筆");
+  return expired;
+}
+
 var CONSUMER_PRODUCTS_SM = Object.values(PRODUCTS).filter(function(p){ return p.consumer&&p.venue==="supermarket"; });
 var CONSUMER_PRODUCTS_RT = Object.values(PRODUCTS).filter(function(p){ return p.consumer&&p.venue==="restaurant"; });
 var CONSUMER_PRODUCTS_CL = Object.values(PRODUCTS).filter(function(p){ return p.consumer&&p.venue==="clothing"; });

@@ -231,25 +231,21 @@ function broadcastTick(wss, sandbox, worldId){
   });
 
   // 每個遊戲天結束（dayTick 剛重置為 0）：
-  //   1. 送輕量 summary（各自個人化）
-  //   2. [Phase 7C-fix] 順便送一次「這個連線自己」的完整同步
-  //      （sanitizeWorldForClient，個人化、只送給這個連線自己，不是
-  //      全體廣播）。原因：玩家放著不操作時，生產完成、國債狀態變化
-  //      這些完整 world 資料的變動，原本要等玩家自己觸發下一次動作
-  //      才會同步過去，畫面會停在舊資料。現在每 60 秒（一個遊戲天）
-  //      至少會自動同步一次，不需要玩家自己做動作也能看到最新狀態。
-  //      這跟先前修正的「操作後廣播給所有人」是不同的問題：這裡頻率
-  //      低（60秒一次）、且只送給該連線自己，不會重現流量暴增。
+  //   只送輕量 summary（各自個人化，< 2KB），讓前端自行偵測是否需要
+  //   抓完整資料。
+  // [流量修正] 移除每日自動廣播 WORLD_FULL_UPDATE：
+  //   原本每個遊戲天(60秒)對每個連線發一次完整 world（可能高達數 MB），
+  //   1天1440次 × 每次幾百KB~幾MB = 一天輕易超過 1GB 流量。
+  //   現在改成：只廣播輕量的 WORLD_UPDATE summary（< 2KB），
+  //   前端收到後比對 world.tick 有沒有變，有的話才主動發一次
+  //   GET /api/world 抓完整資料（但此請求由前端自己決定頻率，
+  //   不是每個 tick 都抓，見前端的 WORLD_UPDATE 處理邏輯）。
   if(world.dayTick === 0){
     wss.clients.forEach(function(client){
       if(client.worldId !== worldId) return;
       sendToClient(client, {
         type: "WORLD_UPDATE",
         data: buildSummary(world, client.companyId),
-      });
-      sendToClient(client, {
-        type: "WORLD_FULL_UPDATE",
-        data: sanitizeWorldForClient(world, client.companyId),
       });
     });
   }

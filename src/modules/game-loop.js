@@ -96,6 +96,7 @@ function tick(){
 
   if(world.dayTick>=20){
     world.dayTick=0; world.day++;
+    expireStaleOrders();       // [資料膨脹修正] 清理過期未成交訂單（見 economy.js）
     generateMonitorReport();
     tickStockSystem();
     tickGovernmentSystem();

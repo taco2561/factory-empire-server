@@ -98,8 +98,9 @@ function handleAction(sandbox, action, companyId){
       // ── 市場交易 ─────────────────────────────────────────────
       case "MARKET_ORDER":
         // payload: { productId, side("buy"|"sell"), qty, price }
+        // createOrder 成功回傳 order 物件，失敗回傳 null
         var r3 = s.createOrder(pid, payload.productId, payload.side, payload.qty, payload.price);
-        return r3 && r3.ok ? { ok:true, orderId: r3.orderId } : { ok:false, error: r3 ? r3.reason : "掛單失敗" };
+        return r3 ? { ok:true, orderId: r3.id } : { ok:false, error:"掛單失敗（現金/庫存不足或參數無效）" };
 
       case "CANCEL_ORDER":
         // payload: { orderId }
@@ -456,16 +457,38 @@ function createRequestHandler(wss){
           return;
         }
         var result = handleAction(actionSandbox, action, companyId);
+
+        // [流量根本修正] action 回傳時直接附上「玩家自己公司」的最新狀態
+        // （幾 KB），前端不需要再另外發 GET /api/world（幾 MB）就能更新畫面。
+        // 這讓每次操作的網路成本從「幾 MB × 每次點擊」降回「幾 KB × 每次點擊」。
+        if(result.ok && companyId && actionSandbox){
+          var playerCompany = actionSandbox.world.companies.find(
+            function(c){ return c.id === companyId; }
+          );
+          if(playerCompany){
+            // 只回傳玩家自己的公司資料 + 世界的輕量狀態（天數/景氣/市場）
+            // 不包含其他公司，這是前端更新畫面所需的最小資料集
+            result.snapshot = {
+              day:      actionSandbox.world.day,
+              tick:     actionSandbox.world.tick,
+              dayTick:  actionSandbox.world.dayTick,
+              economyState: actionSandbox.world.economyState,
+              market:   actionSandbox.world.market,
+              company:  playerCompany, // 玩家自己的公司（完整資料）
+              notifications: (actionSandbox.world.notifications || []).filter(
+                function(n){ return !n.companyId || n.companyId === companyId; }
+              ).slice(0, 10),
+            };
+          }
+        }
+
         res.writeHead(result.ok ? 200 : 400);
         res.end(JSON.stringify(result));
 
-        // [Phase 5B] Action 成功後，廣播最新 world 狀態給所有連線的前端
-        // [Phase 7C] 只廣播給連到「同一個 world」的連線
-        // [Phase 7C-fix] 只送給操作者自己開著的分頁，不再廣播給全部人
-        // （降低不必要的流量——見 ws-server.js 的 broadcastWorldUpdate 註解）
-        if(result.ok && wss){
-          wsServer.broadcastWorldUpdate(wss, actionSandbox, actionWorldId, companyId);
-        }
+        // WebSocket broadcastWorldUpdate 已移除：
+        // 前端現在從 action 回傳的 snapshot 直接更新畫面，
+        // 不再依賴 WebSocket 廣播做操作即時反應。
+        // WebSocket 只保留每日輕量 TICK/WORLD_UPDATE（天數/景氣等公開資訊）。
       });
       return;
     }

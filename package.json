@@ -1,7 +1,7 @@
 {
   "name": "factory-empire-server",
-  "version": "0.10.1-phase7c-fix",
-  "description": "Factory Empire v3 - Phase 7C-fix: 修正 WORLD_FULL_UPDATE 廣播範圍過大導致流量異常暴增的問題",
+  "version": "0.11.0-traffic-final",
+  "description": "Factory Empire v3 - 流量修正: 移除每日全量廣播，改為輕量摘要+按需拉取",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"

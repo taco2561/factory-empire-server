@@ -1,4 +1,3 @@
-process.exit(0);
 // ══════════════════════════════════════════════════════════════
 // Factory Empire v3 — Server (Phase 1~6 + Phase 7B WorldManager)
 //
